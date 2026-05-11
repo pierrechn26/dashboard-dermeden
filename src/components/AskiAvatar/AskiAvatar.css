@@ -1,0 +1,105 @@
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+@keyframes shadowPulse {
+  0%, 100% { transform: scaleX(1); opacity: 1; }
+  50% { transform: scaleX(0.75); opacity: 0.5; }
+}
+
+@keyframes giggle {
+  0%, 100% { transform: translateY(0); }
+  20% { transform: translateY(-6px); }
+  40% { transform: translateY(0); }
+  60% { transform: translateY(-4px); }
+  80% { transform: translateY(0); }
+}
+
+.aski-wrapper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.aski-sphere {
+  border-radius: 50%;
+  position: relative;
+  cursor: pointer;
+  animation: float 3.5s ease-in-out infinite;
+  background:
+    radial-gradient(circle at 38% 28%, rgba(255,255,255,1) 0%, rgba(255,255,255,0) 45%),
+    radial-gradient(circle at 50% 50%, #f5f5f8 0%, #e8e8ee 50%, #d8d8e0 80%, #c8c8d2 100%);
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.12),
+    0 6px 20px rgba(0, 0, 0, 0.08),
+    inset 0 -8px 20px rgba(0, 0, 0, 0.04);
+}
+
+.aski-sphere::before {
+  content: '';
+  position: absolute;
+  top: 8%;
+  left: 25%;
+  width: 35%;
+  height: 20%;
+  background: radial-gradient(ellipse, rgba(255,255,255,0.8) 0%, transparent 70%);
+  border-radius: 50%;
+}
+
+.aski-visor-outer {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -70%);
+  border-radius: 50%;
+  padding: 3px;
+  background: linear-gradient(160deg, #9B30FF 0%, #E63946 45%, #FF8C00 100%);
+  box-shadow:
+    0 0 20px rgba(155, 48, 255, 0.15),
+    0 0 20px rgba(255, 140, 0, 0.15);
+}
+
+.aski-visor {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: linear-gradient(170deg, #2a2a3e 0%, #141420 40%, #0e0e18 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18%;
+  position: relative;
+  overflow: hidden;
+  box-shadow: inset 0 4px 15px rgba(0, 0, 0, 0.5);
+}
+
+.aski-visor::before {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: 10%;
+  width: 80%;
+  height: 45%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.10) 0%, transparent 100%);
+  border-radius: 50% 50% 60% 60%;
+}
+
+.aski-eye {
+  background: radial-gradient(circle at 45% 40%, #ffffff 0%, #e8e8ff 80%);
+  position: relative;
+  z-index: 1;
+  border-radius: 50%;
+  transition: width 250ms cubic-bezier(0.4, 0, 0.2, 1),
+              height 250ms cubic-bezier(0.4, 0, 0.2, 1),
+              border-radius 250ms cubic-bezier(0.4, 0, 0.2, 1),
+              transform 300ms cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 250ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.aski-shadow {
+  border-radius: 50%;
+  background: radial-gradient(ellipse, rgba(0, 0, 0, 0.12) 0%, transparent 70%);
+  animation: shadowPulse 3.5s ease-in-out infinite;
+}

@@ -1,0 +1,1 @@
+ALTER TABLE public.marketing_recommendations ADD COLUMN IF NOT EXISTS title text;

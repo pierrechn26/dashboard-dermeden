@@ -1,0 +1,1 @@
+ALTER TABLE personas ADD COLUMN IF NOT EXISTS is_existing_client_persona BOOLEAN DEFAULT FALSE;

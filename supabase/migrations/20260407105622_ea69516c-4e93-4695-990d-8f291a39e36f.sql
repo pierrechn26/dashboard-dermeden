@@ -1,0 +1,1 @@
+UPDATE public.client_plan SET aski_limit = 56 WHERE project_id = 'ouate';

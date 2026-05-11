@@ -1,0 +1,55 @@
+project_id = "btkjdqelvvqmtguhhkdv"
+
+[functions.diagnostic-webhook]
+verify_jwt = false
+
+[functions.shopify-order-webhook]
+verify_jwt = false
+
+[functions.ga4-analytics]
+verify_jwt = false
+
+[functions.generate-funnel-recommendations]
+verify_jwt = false
+
+[functions.generate-marketing-recommendations]
+verify_jwt = false
+
+[functions.persona-stats]
+verify_jwt = false
+
+[functions.persona-priorities]
+verify_jwt = false
+
+[functions.aski-chat]
+verify_jwt = false
+
+[functions.sync-shopify-products]
+verify_jwt = false
+
+[functions.sync-klaviyo-persona]
+verify_jwt = false
+
+[functions.backfill-klaviyo]
+verify_jwt = false
+
+[functions.detect-persona-clusters]
+verify_jwt = false
+
+[functions.get-usage-stats]
+verify_jwt = false
+
+[functions.monthly-market-intelligence]
+verify_jwt = false
+
+[functions.generate-recommendation-content]
+verify_jwt = false
+
+[functions.weekly-intelligence-refresh]
+verify_jwt = false
+
+[functions.get-org-limits]
+verify_jwt = false
+
+[functions.scrape-commercial-facts]
+verify_jwt = false

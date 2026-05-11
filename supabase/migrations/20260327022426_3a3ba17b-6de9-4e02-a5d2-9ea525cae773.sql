@@ -1,0 +1,2 @@
+ALTER TABLE public.api_usage_logs DROP CONSTRAINT api_usage_logs_api_provider_check;
+ALTER TABLE public.api_usage_logs ADD CONSTRAINT api_usage_logs_api_provider_check CHECK (api_provider = ANY (ARRAY['gemini'::text, 'perplexity'::text, 'anthropic'::text, 'lovable-ai'::text]));
