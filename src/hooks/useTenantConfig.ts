@@ -52,6 +52,18 @@ export interface TenantConfig {
     need?: string[];
     behavior?: string[];
   } | null;
+  /**
+   * Drives the dynamic columns in the SessionsTable. See Bloc 3 of
+   * the template corrections backlog (migration
+   * supabase/pending_migrations/04_add_column_labels_mapping.sql).
+   *
+   * Each entry: { label, category?, value_mapping? }
+   */
+  column_labels_mapping: Record<string, {
+    label: string;
+    category?: string;
+    value_mapping?: Record<string, string>;
+  }> | null;
 }
 
 interface TenantConfigState {
@@ -88,6 +100,7 @@ const FALLBACK_CONFIG: TenantConfig = {
   meta_pixel_id: null,
   persona_detection_params: null,
   persona_dimension_mapping: null,
+  column_labels_mapping: null,
 };
 
 async function fetchTenantConfig(): Promise<TenantConfig | null> {
