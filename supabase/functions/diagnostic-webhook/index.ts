@@ -10,11 +10,70 @@ function jsonResponse(body: Record<string, unknown>, status: number) {
   });
 }
 
-// Cf. backlog #2.10 — Anti-regression guards for status and exit_type fields.
-// A diagnostic session can receive multiple payloads during its lifetime
-// (start, mid-session, completion). A late payload with stale data must not
-// regress the session: e.g. a payload with status='en_cours' arriving after
-// the session has reached 'termine' is silently kept as 'termine'.
+/* ============================================================
+   DEFENSIVE MAPPING HELPERS — Bloc 2
+   ============================================================ */
+
+// Returns the first argument that is neither undefined nor null.
+// Empty strings, 0, and false are considered defined values.
+// deno-lint-ignore no-explicit-any
+function firstDefined<T = any>(...values: T[]): T | null {
+  for (const v of values) {
+    if (v !== undefined && v !== null) return v;
+  }
+  return null;
+}
+
+// Reads a sequence of dotted paths from a source object and returns the
+// first defined value found. Useful when the same logical field can arrive
+// at different positions in the payload depending on the diagnostic version.
+//
+// Example: coalesceFrom(payload, "utm.medium", "tracking.utm_medium", "utm_medium")
+// deno-lint-ignore no-explicit-any
+function coalesceFrom(source: any, ...paths: string[]): any {
+  if (!source || typeof source !== "object") return null;
+  for (const path of paths) {
+    const parts = path.split(".");
+    let cur: any = source;
+    let ok = true;
+    for (const p of parts) {
+      if (cur && typeof cur === "object" && p in cur) {
+        cur = cur[p];
+      } else {
+        ok = false;
+        break;
+      }
+    }
+    if (ok && cur !== undefined && cur !== null) return cur;
+  }
+  return null;
+}
+
+/* ============================================================
+   TONE MAPS — generic template values only.
+   Tenant-specific extensions (e.g. priority labels for a given brand)
+   must live in tenant_config rather than being hardcoded here.
+   ============================================================ */
+
+// Maps a generic priority code → adapted tone keyword used by downstream
+// AI prompts. Extend per-tenant via tenant_config.priority_tone_map.
+const PRIORITY_TONE_MAP: Record<string, string> = {
+  ludique: "playful",
+  autonomie: "empowering",
+  efficacite: "factual",
+  clean: "transparent",
+};
+
+// Human-readable label for the dominant priority (used in dashboards/exports).
+// Intentionally empty in the template — to be extended per tenant via
+// tenant_config.priority_tone_label_map.
+const PRIORITY_TONE_LABEL_MAP: Record<string, string> = {
+  // À étendre par tenant via tenant_config plus tard.
+};
+
+/* ============================================================
+   STATUS / EXIT_TYPE GUARDS (Cf. backlog #2.10)
+   ============================================================ */
 
 const FINAL_STATUS_STATES = ["termine", "abandonne"] as const;
 
@@ -22,7 +81,6 @@ function protectStatus(
   existingStatus: string | null | undefined,
   payloadStatus: string | null | undefined
 ): string | null {
-  // Once a session reaches a final state, no further status change is allowed.
   if (existingStatus && (FINAL_STATUS_STATES as readonly string[]).includes(existingStatus)) {
     if (payloadStatus && payloadStatus !== existingStatus) {
       console.log(
@@ -34,8 +92,6 @@ function protectStatus(
   return payloadStatus ?? existingStatus ?? null;
 }
 
-// exit_type progresses linearly: null → abandon → completed → checkout → converted.
-// A higher rank can never be downgraded (e.g. converted → checkout is refused).
 const EXIT_TYPE_PROGRESSION: (string | null)[] = [
   null,
   "abandon",
@@ -44,54 +100,155 @@ const EXIT_TYPE_PROGRESSION: (string | null)[] = [
   "converted",
 ];
 
+// Translates a raw exit_type token coming from various diagnostic versions
+// into the canonical progression vocabulary. Unknown tokens are passed
+// through unchanged.
+function translateExitType(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const v = String(raw).trim().toLowerCase();
+  const map: Record<string, string> = {
+    abandon: "abandon",
+    abandoned: "abandon",
+    abandonne: "abandon",
+    drop: "abandon",
+    dropoff: "abandon",
+    completed: "completed",
+    complete: "completed",
+    termine: "completed",
+    finished: "completed",
+    checkout: "checkout",
+    checkout_started: "checkout",
+    converted: "converted",
+    conversion: "converted",
+    purchased: "converted",
+    purchase: "converted",
+  };
+  return map[v] ?? v;
+}
+
+// Derives a computed exit_type from session state when the payload omits it:
+//   - status=termine + conversion=true  → "converted"
+//   - status=termine                    → "completed"
+//   - status=en_cours + abandoned_at_step set → "abandon"
+function computeExitType(
+  status: string | null | undefined,
+  conversion: unknown,
+  abandonedAtStep: unknown
+): string | null {
+  if (status === "termine" && conversion === true) return "converted";
+  if (status === "termine") return "completed";
+  if (status === "en_cours" && abandonedAtStep !== null && abandonedAtStep !== undefined && abandonedAtStep !== "") {
+    return "abandon";
+  }
+  return null;
+}
+
 function protectExitType(
   existingExitType: string | null | undefined,
-  payloadExitType: string | null | undefined
+  payloadExitType: string | null | undefined,
+  computedFallback: string | null = null
 ): string | null {
+  const candidate = translateExitType(payloadExitType) ?? computedFallback;
   const existingRank = EXIT_TYPE_PROGRESSION.indexOf(existingExitType ?? null);
-  const payloadRank = EXIT_TYPE_PROGRESSION.indexOf(payloadExitType ?? null);
+  const candidateRank = EXIT_TYPE_PROGRESSION.indexOf(candidate ?? null);
 
-  if (existingRank > payloadRank) {
-    if (payloadExitType) {
+  if (existingRank > candidateRank) {
+    if (candidate) {
       console.log(
-        `[protectExitType] Regression blocked: ${existingExitType} (kept, rank ${existingRank}) vs ${payloadExitType} (refused, rank ${payloadRank})`
+        `[protectExitType] Regression blocked: ${existingExitType} (kept, rank ${existingRank}) vs ${candidate} (refused, rank ${candidateRank})`
       );
     }
     return existingExitType ?? null;
   }
-  return payloadExitType ?? existingExitType ?? null;
+  return candidate ?? existingExitType ?? null;
 }
 
 // deno-lint-ignore no-explicit-any
 type SupabaseClient = any;
 
 /* ============================================================
-   ADAPTED TONE COMPUTATION — deterministic, based on session data
+   PRIORITY EXTRACTION — multi-source
+   The dominant priority can arrive in several positions depending on the
+   diagnostic version. This helper checks all known locations in order.
    ============================================================ */
-function computeAdaptedTone(sessionData: Record<string, unknown>): string {
-  const priority_1 = sessionData.priorities_ordered
-    ? String(sessionData.priorities_ordered).split(",")[0].trim()
-    : null;
+// deno-lint-ignore no-explicit-any
+function getFirstPriority(payload: any, items: any[], sessionData: Record<string, unknown>): string | null {
+  // 1. Already computed on sessionData (comma-separated)
+  if (sessionData.priorities_ordered) {
+    const first = String(sessionData.priorities_ordered).split(",")[0].trim();
+    if (first) return first;
+  }
+
+  // 2. Top-level payload.priorities_ordered
+  if (payload?.priorities_ordered) {
+    const first = String(payload.priorities_ordered).split(",")[0].trim();
+    if (first) return first;
+  }
+
+  // 3. payload.item_metadata.answers.priorities
+  const a1 = coalesceFrom(payload, "item_metadata.answers.priorities");
+  if (Array.isArray(a1) && a1.length > 0) return String(a1[0]).trim();
+  if (typeof a1 === "string" && a1) return a1.split(",")[0].trim();
+
+  // 4. payload.item_metadata.priorities
+  const a2 = coalesceFrom(payload, "item_metadata.priorities");
+  if (Array.isArray(a2) && a2.length > 0) return String(a2[0]).trim();
+  if (typeof a2 === "string" && a2) return a2.split(",")[0].trim();
+
+  // 5. items[0].item_metadata.priorities
+  const first = Array.isArray(items) ? items.find((i) => i?.item_index === 0) ?? items[0] : null;
+  const a3 = coalesceFrom(first, "item_metadata.priorities");
+  if (Array.isArray(a3) && a3.length > 0) return String(a3[0]).trim();
+  if (typeof a3 === "string" && a3) return a3.split(",")[0].trim();
+
+  // 6. items[0].item_metadata._raw.answers.priorities
+  const a4 = coalesceFrom(first, "item_metadata._raw.answers.priorities");
+  if (Array.isArray(a4) && a4.length > 0) return String(a4[0]).trim();
+  if (typeof a4 === "string" && a4) return a4.split(",")[0].trim();
+
+  return null;
+}
+
+/* ============================================================
+   ADAPTED TONE + TONE LABEL
+   ============================================================ */
+function computeAdaptedTone(
+  sessionData: Record<string, unknown>,
+  priority1: string | null
+): string {
+  if (priority1 && PRIORITY_TONE_MAP[priority1]) {
+    return PRIORITY_TONE_MAP[priority1];
+  }
   const trust_trigger_1 = sessionData.trust_triggers_ordered
     ? String(sessionData.trust_triggers_ordered).split(",")[0].trim()
     : null;
-
-  const priorityToneMap: Record<string, string> = {
-    ludique: "playful",
-    autonomie: "empowering",
-    efficacite: "factual",
-    clean: "transparent",
-  };
-
-  if (priority_1 && priorityToneMap[priority_1]) {
-    return priorityToneMap[priority_1];
-  }
-
   if (trust_trigger_1 === "scientific_validation" || trust_trigger_1 === "proof_results") {
     return "expert";
   }
-
   return "factual";
+}
+
+function computeToneLabel(priority1: string | null): string | null {
+  if (!priority1) return null;
+  return PRIORITY_TONE_LABEL_MAP[priority1] ?? null;
+}
+
+/* ============================================================
+   ENGAGEMENT SCORE (0-100)
+   Generic signals only — duration, completion, contact, opt-in, hesitation.
+   ============================================================ */
+function computeEngagementScore(sessionData: Record<string, unknown>): number {
+  let score = 0;
+  const duration = Number(sessionData.duration_seconds ?? 0);
+  if (duration > 30) score += 20;
+  if (sessionData.status === "termine") score += 25;
+  if (sessionData.phone) score += 15;
+  if (sessionData.email) score += 15;
+  if (sessionData.optin_email === true || sessionData.optin_sms === true) score += 15;
+  const back = Number(sessionData.back_navigation_count ?? 0);
+  if (back <= 1) score += 10;
+  else if (back <= 3) score += 5;
+  return Math.max(0, Math.min(100, score));
 }
 
 /* ============================================================
@@ -104,7 +261,6 @@ async function computePersonaWithScore(
   items: any[]
 ): Promise<{ code: string; score: number; scores_all: Record<string, number> }> {
 
-  // 1. Load all active personas (excluding P0 pool)
   const { data: personas } = await supabase
     .from("personas")
     .select("code, criteria")
@@ -116,7 +272,6 @@ async function computePersonaWithScore(
     return { code: "P0", score: 0, scores_all: {} };
   }
 
-  // 2. Prepare session values for matching
   const item1 = items.find((c: any) => c.item_index === 0) || items[0];
   const item2 = items.find((c: any) => c.item_index === 1);
 
@@ -127,7 +282,6 @@ async function computePersonaWithScore(
     ? String(sessionData.trust_triggers_ordered).split(",")[0].trim()
     : null;
 
-  // Session-level values (universal across all tenants)
   // deno-lint-ignore no-explicit-any
   const sessionValues: Record<string, any> = {
     "relationship": sessionData.relationship,
@@ -139,13 +293,6 @@ async function computePersonaWithScore(
     "content_format_preference": sessionData.content_format_preference,
   };
 
-  // Item-level values — dynamically read from item_metadata JSONB.
-  // The persona criteria reference these as "item.<field>" (e.g., "item.skin_concern").
-  // This is tenant-agnostic: whatever keys the diagnostic puts into item_metadata
-  // are automatically available for persona matching.
-  // Also handles backward-compat: if the diagnostic sends fields directly on
-  // the item object (e.g., {skin_concern: "xxx"}) instead of nested inside
-  // item_metadata, we still pick them up.
   const ITEM_TOP_LEVEL = new Set([
     "item_index", "item_label", "session_id", "id", "created_at",
     "dynamic_question_1", "dynamic_answer_1",
@@ -157,11 +304,9 @@ async function computePersonaWithScore(
   // deno-lint-ignore no-explicit-any
   function extractMetadata(item: any): Record<string, any> {
     const meta: Record<string, any> = {};
-    // 1. Structured item_metadata (from DB rows or well-formed payloads)
     if (item.item_metadata && typeof item.item_metadata === "object") {
       Object.assign(meta, item.item_metadata);
     }
-    // 2. Direct properties (backward-compat for legacy diagnostic payloads)
     for (const [key, value] of Object.entries(item)) {
       if (!ITEM_TOP_LEVEL.has(key) && value !== undefined && value !== null && !(key in meta)) {
         meta[key] = value;
@@ -174,29 +319,21 @@ async function computePersonaWithScore(
     const meta1 = extractMetadata(item1);
     for (const [key, value] of Object.entries(meta1)) {
       sessionValues[`item.${key}`] = value;
-      // Backward-compat: existing persona criteria may reference "child.xxx"
-      // (legacy Ouate convention). Populate both prefixes so criteria work
-      // regardless of which prefix was used when they were created.
       sessionValues[`child.${key}`] = value;
     }
   }
 
-  // Special criterion: compare a need-level field between item1 and item2.
-  // The persona criteria can reference "item.<field>_different" to match sessions
-  // where the first two items have different values for a given field.
   if (item1 && item2) {
     const meta1 = extractMetadata(item1);
     const meta2 = extractMetadata(item2);
     for (const key of Object.keys(meta1)) {
       const isDifferent = meta1[key] !== meta2[key];
       sessionValues[`item.${key}_different`] = isDifferent;
-      sessionValues[`child.${key}_different`] = isDifferent; // backward-compat
+      sessionValues[`child.${key}_different`] = isDifferent;
     }
   }
 
-  // 3. Score each persona
   const scores: Record<string, number> = {};
-  // Track need-level scores for tie-breaking (Fix A)
   const needScores: Record<string, number> = {};
 
   for (const persona of personas) {
@@ -217,22 +354,18 @@ async function computePersonaWithScore(
         const criterionWeight = criterion.weight;
         levelTotalWeight += criterionWeight;
 
-        // "any" always matches
         if (criterion.values.includes("any")) {
           levelScore += criterionWeight;
           continue;
         }
 
-        // null/undefined in session = no match
         if (sessionValue === null || sessionValue === undefined) {
-          // Fix B: if required and missing, block the persona
           if (criterion.required === true) {
             blockedByRequired = true;
           }
           continue;
         }
 
-        // Evaluate match
         let matched = false;
         if (criterion.operator === "gte") {
           matched = Number(sessionValue) >= Number(criterion.values[0]);
@@ -248,14 +381,12 @@ async function computePersonaWithScore(
         if (matched) {
           levelScore += criterionWeight;
         } else if (criterion.required === true) {
-          // Fix B: required criterion didn't match → block this persona
           blockedByRequired = true;
         }
       }
 
       if (blockedByRequired) break;
 
-      // Level score = (weighted matches / total weight) × level weight
       if (levelTotalWeight > 0) {
         const contribution = (levelScore / levelTotalWeight) * levelWeight;
         totalScore += contribution;
@@ -267,7 +398,6 @@ async function computePersonaWithScore(
     if (blockedByRequired) needScores[persona.code] = 0;
   }
 
-  // 4. Find best persona (highest score, ≥60%) — Fix A: break ties using need score
   let bestCode = "P0";
   let bestScore = 0;
   let bestNeedScore = 0;
@@ -281,7 +411,6 @@ async function computePersonaWithScore(
     }
   }
 
-  // If best score < 60% → P0 (unassigned pool)
   if (bestScore < 60) {
     bestCode = "P0";
   }
@@ -295,18 +424,14 @@ async function computePersonaWithScore(
    ============================================================ */
 // deno-lint-ignore no-explicit-any
 async function handleNewFormat(supabase: SupabaseClient, payload: any) {
-  // Backward compatibility: accept both "items" (template convention) and
-  // "children" (Ouate legacy diagnostic) in the webhook payload.
   const payloadItems: any[] = payload.items ?? payload.children ?? [];
 
-  // Fetch existing session to apply COALESCE logic (don't overwrite with nulls)
   const { data: existing } = await supabase
     .from("diagnostic_sessions")
     .select("*")
     .eq("session_code", payload.session_code)
     .maybeSingle();
 
-  // Helper: use incoming value if explicitly provided (not undefined/null), else keep existing
   // deno-lint-ignore no-explicit-any
   const coalesce = (field: string, fallback: any = null) => {
     const incoming = payload[field];
@@ -315,13 +440,35 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
     return fallback;
   };
 
+  // UTM / paid-ads click ids — read defensively from payload.utm.*, payload.tracking.*
+  // or top-level payload.<field>. Falls back to existing row to avoid wiping
+  // values picked up on an earlier ping.
+  const utm = (field: string) =>
+    firstDefined(
+      coalesceFrom(payload, `utm.${field}`, `tracking.${field}`, field),
+      existing?.[field]
+    );
+
+  const status = protectStatus(existing?.status, payload.status) ?? "en_cours";
+  const conversion = coalesce("conversion", false);
+  const abandonedAtStepIncoming = payload.abandoned_at_step === "CLEAR"
+    ? null
+    : coalesce("abandoned_at_step");
+  // Once the session is completed, abandoned_at_step is meaningless — clear it.
+  const abandonedAtStep = status === "termine" ? null : abandonedAtStepIncoming;
+
+  const computedExit = computeExitType(status, conversion, abandonedAtStep);
+
   const sessionData: Record<string, unknown> = {
     session_code: payload.session_code,
-    // Cf. backlog #2.10: protectStatus blocks regression away from final states
-    // (termine, abandonne).
-    status: protectStatus(existing?.status, payload.status) ?? "en_cours",
+    status,
     source: coalesce("source"),
-    utm_campaign: coalesce("utm_campaign"),
+    utm_campaign: utm("utm_campaign"),
+    utm_medium:   utm("utm_medium"),
+    utm_content:  utm("utm_content"),
+    utm_term:     utm("utm_term"),
+    gclid:        utm("gclid"),
+    fbclid:       utm("fbclid"),
     device: coalesce("device"),
     user_name: coalesce("user_name"),
     relationship: coalesce("relationship"),
@@ -333,10 +480,9 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
     locale: coalesce("locale"),
     result_url: coalesce("result_url"),
     adapted_tone: coalesce("adapted_tone"),
-    conversion: coalesce("conversion", false),
-    // Cf. backlog #2.10: protectExitType enforces the linear progression
-    // null → abandon → completed → checkout → converted.
-    exit_type: protectExitType(existing?.exit_type, payload.exit_type),
+    tone_label: coalesce("tone_label"),
+    conversion,
+    exit_type: protectExitType(existing?.exit_type, payload.exit_type, computedExit),
     existing_brand_products: coalesce("existing_brand_products") ?? coalesce("existing_client_products"),
     is_existing_client: coalesce("is_existing_client", false),
     recommended_cart_amount: coalesce("recommended_cart_amount"),
@@ -349,7 +495,7 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
     checkout_at: coalesce("checkout_at"),
     upsell_potential: coalesce("upsell_potential"),
     duration_seconds: coalesce("duration_seconds"),
-    abandoned_at_step: payload.abandoned_at_step === "CLEAR" ? null : coalesce("abandoned_at_step"),
+    abandoned_at_step: abandonedAtStep,
     question_path: coalesce("question_path"),
     back_navigation_count: coalesce("back_navigation_count", 0),
     has_optional_details: coalesce("has_optional_details", false),
@@ -364,6 +510,22 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
     has_detailed_responses: coalesce("has_detailed_responses", false),
     step_timestamps: coalesce("step_timestamps"),
   };
+
+  // Compute tone + label up-front from all available sources so they are
+  // persisted even on the first webhook ping (before items hit the DB).
+  const priority1 = getFirstPriority(payload, payloadItems, sessionData);
+  if (!sessionData.adapted_tone) {
+    sessionData.adapted_tone = computeAdaptedTone(sessionData, priority1);
+  }
+  if (!sessionData.tone_label) {
+    const label = computeToneLabel(priority1);
+    if (label) sessionData.tone_label = label;
+  }
+
+  // Recompute engagement_score if not provided by the payload.
+  if (sessionData.engagement_score === null || sessionData.engagement_score === undefined) {
+    sessionData.engagement_score = computeEngagementScore(sessionData);
+  }
 
   const { data: session, error: sessionError } = await supabase
     .from("diagnostic_sessions")
@@ -399,7 +561,6 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
     await supabase.from("diagnostic_sessions").update({ over_quota: true }).eq("id", session.id);
   }
 
-  // Fire-and-forget: notify portal at 80% and 100% thresholds
   const diagPercent = diagnosticLimit > 0 ? (totalSessions / diagnosticLimit) * 100 : 0;
   const diagPrevPercent = diagnosticLimit > 0 ? ((totalSessions - 1) / diagnosticLimit) * 100 : 0;
   if (diagPrevPercent < 80 && diagPercent >= 80) {
@@ -411,11 +572,7 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
 
   console.log("[diagnostic-webhook] Session saved:", session.id);
 
-  // Items: native UPSERT on (session_id, item_index) — idempotent without
-  // a destructive delete window. Backlog: avoids race conditions where a
-  // late payload could wipe items from a concurrent payload before reinsert.
   if (Array.isArray(payloadItems) && payloadItems.length > 0) {
-    // Top-level columns in diagnostic_items (universal, not tenant-specific)
     const TOP_LEVEL_KEYS = new Set([
       "item_index", "item_label",
       "dynamic_question_1", "dynamic_answer_1",
@@ -426,7 +583,6 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
 
     // deno-lint-ignore no-explicit-any
     const itemRows = payloadItems.map((c: any) => {
-      // Build item_metadata from all keys that are NOT top-level columns
       const metadata: Record<string, unknown> = {};
       for (const [key, value] of Object.entries(c)) {
         if (!TOP_LEVEL_KEYS.has(key) && value !== undefined) {
@@ -462,24 +618,28 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
     }
     console.log("[diagnostic-webhook] Items saved:", payloadItems.length);
 
-    // Assign persona + score + adapted_tone if session is completed
     if (sessionData.status === "termine") {
       const persona = await computePersonaWithScore(supabase, sessionData, payloadItems);
-      const adaptedTone = computeAdaptedTone(sessionData);
+      const priority1Final = getFirstPriority(payload, payloadItems, sessionData);
+      const adaptedTone = computeAdaptedTone(sessionData, priority1Final);
+      const toneLabel = computeToneLabel(priority1Final);
       await supabase
         .from("diagnostic_sessions")
-        .update({ persona_code: persona.code, matching_score: persona.score, adapted_tone: adaptedTone })
+        .update({
+          persona_code: persona.code,
+          matching_score: persona.score,
+          adapted_tone: adaptedTone,
+          tone_label: toneLabel,
+        })
         .eq("id", session.id);
-      console.log("[diagnostic-webhook] Persona assigned:", persona.code, "score:", persona.score, "tone:", adaptedTone);
+      console.log("[diagnostic-webhook] Persona assigned:", persona.code, "score:", persona.score, "tone:", adaptedTone, "label:", toneLabel);
 
-      // Sync Klaviyo — fire and forget
       supabase.functions.invoke("sync-klaviyo-persona", {
         body: { session_id: session.id },
       }).catch((err: Error) => console.error("[diagnostic-webhook] Klaviyo sync failed:", err));
     }
   }
 
-  // Also assign persona if terminated but no items in this payload
   if (sessionData.status === "termine" && (!Array.isArray(payloadItems) || payloadItems.length === 0)) {
     const { data: existingItems } = await supabase
       .from("diagnostic_items")
@@ -489,14 +649,20 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
 
     if (existingItems && existingItems.length > 0) {
       const persona = await computePersonaWithScore(supabase, sessionData, existingItems);
-      const adaptedTone = computeAdaptedTone(sessionData);
+      const priority1Final = getFirstPriority(payload, existingItems, sessionData);
+      const adaptedTone = computeAdaptedTone(sessionData, priority1Final);
+      const toneLabel = computeToneLabel(priority1Final);
       await supabase
         .from("diagnostic_sessions")
-        .update({ persona_code: persona.code, matching_score: persona.score, adapted_tone: adaptedTone })
+        .update({
+          persona_code: persona.code,
+          matching_score: persona.score,
+          adapted_tone: adaptedTone,
+          tone_label: toneLabel,
+        })
         .eq("id", session.id);
-      console.log("[diagnostic-webhook] Persona assigned (existing items):", persona.code, "score:", persona.score, "tone:", adaptedTone);
+      console.log("[diagnostic-webhook] Persona assigned (existing items):", persona.code, "score:", persona.score, "tone:", adaptedTone, "label:", toneLabel);
 
-      // Sync Klaviyo — fire and forget
       supabase.functions.invoke("sync-klaviyo-persona", {
         body: { session_id: session.id },
       }).catch((err: Error) => console.error("[diagnostic-webhook] Klaviyo sync failed:", err));
@@ -522,9 +688,6 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Validate webhook secret — prefer DASHBOARD_WEBHOOK_SECRET (template
-    // canonical name). Falls back to legacy DIAGNOSTIC_WEBHOOK_SECRET for
-    // projects remixed before the rename.
     const webhookSecret = req.headers.get("x-webhook-secret");
     const expectedSecret =
       Deno.env.get("DASHBOARD_WEBHOOK_SECRET") ??
