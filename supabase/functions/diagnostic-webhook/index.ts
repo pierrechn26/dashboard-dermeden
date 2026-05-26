@@ -424,7 +424,52 @@ async function computePersonaWithScore(
    ============================================================ */
 // deno-lint-ignore no-explicit-any
 async function handleNewFormat(supabase: SupabaseClient, payload: any) {
-  const payloadItems: any[] = payload.items ?? payload.children ?? [];
+  let payloadItems: any[] = payload.items ?? payload.children ?? [];
+
+  // ── Single-item synthesis fallback ─────────────────────────────────────
+  // Some diagnostics post a flat payload (no payload.items) but carry the
+  // answers in payload.item_metadata. Synthesize a single item so downstream
+  // logic (persona scoring, items table, mapping lookup) keeps working.
+  //
+  // We also flatten two specific keys that the diagnostic nests inside
+  // `_raw` / `answers`:
+  //   - `age` (often under _raw.age)
+  //   - `wantsSubscription` (often under _raw.answers.wantsSubscription
+  //     or _raw.wants_subscription)
+  //
+  // We expose them at the top level of item_metadata in camelCase to match
+  // the naming convention used by column_labels_mapping (hairProblems,
+  // washFrequency, etc.). No tenant-specific values are introduced.
+  if ((!Array.isArray(payloadItems) || payloadItems.length === 0)
+      && payload.item_metadata && typeof payload.item_metadata === "object") {
+    const meta: Record<string, any> = { ...payload.item_metadata };
+    const rawBlock = (payload.item_metadata as any).raw
+      ?? (payload.item_metadata as any)._raw
+      ?? null;
+    const answersBlock = (payload.item_metadata as any).answers ?? null;
+
+    const flatAge =
+      rawBlock?.age ??
+      answersBlock?.age ??
+      undefined;
+
+    const flatWantsSub =
+      rawBlock?.answers?.wantsSubscription ??
+      rawBlock?.wants_subscription ??
+      answersBlock?.wantsSubscription ??
+      answersBlock?.wants_subscription ??
+      undefined;
+
+    payloadItems = [{
+      item_index: 0,
+      item_label: payload.user_name ?? null,
+      ...meta,
+      ...(flatAge != null ? { age: flatAge } : {}),
+      ...(flatWantsSub != null ? { wantsSubscription: flatWantsSub } : {}),
+      _recommendations: (payload.item_metadata as any).recommendations ?? null,
+      _raw: rawBlock,
+    }];
+  }
 
   const { data: existing } = await supabase
     .from("diagnostic_sessions")
