@@ -64,7 +64,7 @@ export interface DiagnosticSession {
   ai_suggested_segment: string | null;
   conversion: boolean;
   exit_type: string | null;
-  existing_client_products: string | null;
+  existing_brand_products: string | null;
   is_existing_client: boolean;
   recommended_products: string | null;
   recommended_cart_amount: number | null;
