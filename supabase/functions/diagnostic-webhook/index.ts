@@ -237,7 +237,12 @@ function computeToneLabel(priority1: string | null): string | null {
    ENGAGEMENT SCORE (0-100)
    Generic signals only — duration, completion, contact, opt-in, hesitation.
    ============================================================ */
-function computeEngagementScore(sessionData: Record<string, unknown>): number {
+// deno-lint-ignore no-explicit-any
+function computeEngagementScore(
+  sessionData: Record<string, unknown>,
+  payload?: any,
+  items?: any[]
+): number {
   let score = 0;
   const duration = Number(sessionData.duration_seconds ?? 0);
   if (duration > 30) score += 20;
@@ -248,6 +253,17 @@ function computeEngagementScore(sessionData: Record<string, unknown>): number {
   const back = Number(sessionData.back_navigation_count ?? 0);
   if (back <= 1) score += 10;
   else if (back <= 3) score += 5;
+
+  // wantsSubscription: defensively read from nested payload locations
+  const wantsSub =
+    payload?.item_metadata?._raw?.wants_subscription ??
+    payload?.item_metadata?.raw?.wants_subscription ??
+    payload?.item_metadata?._raw?.answers?.wantsSubscription ??
+    payload?.item_metadata?.answers?.wantsSubscription ??
+    items?.[0]?.item_metadata?.wantsSubscription ??
+    items?.[0]?.wantsSubscription;
+  if (wantsSub === true) score += 15;
+
   return Math.max(0, Math.min(100, score));
 }
 
@@ -424,7 +440,52 @@ async function computePersonaWithScore(
    ============================================================ */
 // deno-lint-ignore no-explicit-any
 async function handleNewFormat(supabase: SupabaseClient, payload: any) {
-  const payloadItems: any[] = payload.items ?? payload.children ?? [];
+  let payloadItems: any[] = payload.items ?? payload.children ?? [];
+
+  // ── Single-item synthesis fallback ─────────────────────────────────────
+  // Some diagnostics post a flat payload (no payload.items) but carry the
+  // answers in payload.item_metadata. Synthesize a single item so downstream
+  // logic (persona scoring, items table, mapping lookup) keeps working.
+  //
+  // We also flatten two specific keys that the diagnostic nests inside
+  // `_raw` / `answers`:
+  //   - `age` (often under _raw.age)
+  //   - `wantsSubscription` (often under _raw.answers.wantsSubscription
+  //     or _raw.wants_subscription)
+  //
+  // We expose them at the top level of item_metadata in camelCase to match
+  // the naming convention used by column_labels_mapping (hairProblems,
+  // washFrequency, etc.). No tenant-specific values are introduced.
+  if ((!Array.isArray(payloadItems) || payloadItems.length === 0)
+      && payload.item_metadata && typeof payload.item_metadata === "object") {
+    const meta: Record<string, any> = { ...payload.item_metadata };
+    const rawBlock = (payload.item_metadata as any).raw
+      ?? (payload.item_metadata as any)._raw
+      ?? null;
+    const answersBlock = (payload.item_metadata as any).answers ?? null;
+
+    const flatAge =
+      rawBlock?.age ??
+      answersBlock?.age ??
+      undefined;
+
+    const flatWantsSub =
+      rawBlock?.answers?.wantsSubscription ??
+      rawBlock?.wants_subscription ??
+      answersBlock?.wantsSubscription ??
+      answersBlock?.wants_subscription ??
+      undefined;
+
+    payloadItems = [{
+      item_index: 0,
+      item_label: payload.user_name ?? null,
+      ...meta,
+      ...(flatAge != null ? { age: flatAge } : {}),
+      ...(flatWantsSub != null ? { wantsSubscription: flatWantsSub } : {}),
+      _recommendations: (payload.item_metadata as any).recommendations ?? null,
+      _raw: rawBlock,
+    }];
+  }
 
   const { data: existing } = await supabase
     .from("diagnostic_sessions")
@@ -524,7 +585,7 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
 
   // Recompute engagement_score if not provided by the payload.
   if (sessionData.engagement_score === null || sessionData.engagement_score === undefined) {
-    sessionData.engagement_score = computeEngagementScore(sessionData);
+    sessionData.engagement_score = computeEngagementScore(sessionData, payload, payloadItems);
   }
 
   const { data: session, error: sessionError } = await supabase
