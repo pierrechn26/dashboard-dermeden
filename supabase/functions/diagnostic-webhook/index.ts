@@ -237,7 +237,12 @@ function computeToneLabel(priority1: string | null): string | null {
    ENGAGEMENT SCORE (0-100)
    Generic signals only — duration, completion, contact, opt-in, hesitation.
    ============================================================ */
-function computeEngagementScore(sessionData: Record<string, unknown>): number {
+// deno-lint-ignore no-explicit-any
+function computeEngagementScore(
+  sessionData: Record<string, unknown>,
+  payload?: any,
+  items?: any[]
+): number {
   let score = 0;
   const duration = Number(sessionData.duration_seconds ?? 0);
   if (duration > 30) score += 20;
@@ -248,6 +253,17 @@ function computeEngagementScore(sessionData: Record<string, unknown>): number {
   const back = Number(sessionData.back_navigation_count ?? 0);
   if (back <= 1) score += 10;
   else if (back <= 3) score += 5;
+
+  // wantsSubscription: defensively read from nested payload locations
+  const wantsSub =
+    payload?.item_metadata?._raw?.wants_subscription ??
+    payload?.item_metadata?.raw?.wants_subscription ??
+    payload?.item_metadata?._raw?.answers?.wantsSubscription ??
+    payload?.item_metadata?.answers?.wantsSubscription ??
+    items?.[0]?.item_metadata?.wantsSubscription ??
+    items?.[0]?.wantsSubscription;
+  if (wantsSub === true) score += 15;
+
   return Math.max(0, Math.min(100, score));
 }
 
