@@ -1,0 +1,21 @@
+-- Bloc 3 — Add column_labels_mapping to tenant_config.
+-- This JSONB drives the dynamic columns in the SessionsTable in a fully
+-- tenant-agnostic way. Each entry maps a metadata key (either a column on
+-- diagnostic_sessions or a key inside diagnostic_items.item_metadata) to:
+--   - label         : human-readable column header (FR/EN/etc.)
+--   - category      : one of identification|contact|parcours|profil_client|persona|business|comportement
+--   - value_mapping : optional Record<string,string> to translate raw values
+--                     (e.g. {"sensitive":"Peau sensible","dry":"Peau sèche"})
+--
+-- Example payload:
+--   {
+--     "skin_concern": { "label": "Type de peau", "category": "profil_client",
+--                       "value_mapping": {"sensitive":"Sensible","dry":"Sèche"} },
+--     "age_range":    { "label": "Tranche d'âge", "category": "profil_client" }
+--   }
+--
+-- When this mapping is empty, the dashboard falls back to
+-- tenant_config.persona_dimension_mapping.need (legacy behaviour) so existing
+-- Cottan/Ouate-style deployments keep working without migration.
+ALTER TABLE public.tenant_config
+  ADD COLUMN IF NOT EXISTS column_labels_mapping JSONB NOT NULL DEFAULT '{}'::jsonb;

@@ -23,9 +23,11 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useDiagnosticSessions } from "@/hooks/useDiagnosticSessions";
 import { useUsageLimits } from "@/hooks/useUsageLimits";
+import { usePersonaProfiles } from "@/hooks/usePersonaProfiles";
+import { useTenantConfig } from "@/hooks/useTenantConfig";
 import { SessionsTable, getColumnDefs, getDisplayStatus } from "./SessionsTable";
 import { CATEGORIES } from "@/types/diagnostic";
-import type { DiagnosticSession } from "@/types/diagnostic";
+import type { DiagnosticSession, ColumnLabelsMapping } from "@/types/diagnostic";
 import type { DateRange } from "react-day-picker";
 
 /* ── Export helpers ─────────────────────────────────────── */
@@ -40,8 +42,13 @@ function downloadFile(content: string, filename: string, mime: string) {
   URL.revokeObjectURL(url);
 }
 
-function exportCSV(sessions: DiagnosticSession[]) {
-  const cols = getColumnDefs();
+function exportCSV(
+  sessions: DiagnosticSession[],
+  getLabel: (code: string) => string,
+  dynamicFields: string[],
+  columnLabelsMapping: ColumnLabelsMapping | null,
+) {
+  const cols = getColumnDefs(getLabel, dynamicFields, columnLabelsMapping);
   const header = cols.map((c) => `"${c.label}"`).join(",");
   const rows = sessions.map((s) =>
     cols
@@ -75,6 +82,13 @@ export function ResponsesSection({ dateRange }: ResponsesSectionProps) {
   const [conversionFilter, setConversionFilter] = useState("all");
   const { toast } = useToast();
   const { sessions: sessionUsage, upgrade } = useUsageLimits();
+  const { getLabel } = usePersonaProfiles();
+  const { config: tenantConfig } = useTenantConfig();
+  const dynamicFields = useMemo(
+    () => tenantConfig?.persona_dimension_mapping?.need || [],
+    [tenantConfig]
+  );
+  const columnLabelsMapping = (tenantConfig?.column_labels_mapping ?? null) as ColumnLabelsMapping | null;
   const overQuotaCount = useMemo(() => sessions.filter(s => s.over_quota).length, [sessions]);
 
   const filteredCount = useMemo(() => {
@@ -120,7 +134,7 @@ export function ResponsesSection({ dateRange }: ResponsesSectionProps) {
   }, [sessions, statusFilter, conversionFilter, searchTerm, dateRange]);
 
   const handleExportCSV = () => {
-    exportCSV(sessions);
+    exportCSV(sessions, getLabel, dynamicFields, columnLabelsMapping);
     toast({ title: "Export CSV", description: "Fichier téléchargé." });
   };
   const handleExportJSON = () => {

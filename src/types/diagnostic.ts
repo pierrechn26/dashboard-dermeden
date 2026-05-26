@@ -60,6 +60,7 @@ export interface DiagnosticSession {
   persona_detected: string | null;
   persona_matching_score: number | null;
   adapted_tone: string | null;
+  tone_label: string | null;
   ai_key_messages: string | null;
   ai_suggested_segment: string | null;
   conversion: boolean;
@@ -89,13 +90,17 @@ export interface DiagnosticSession {
   _source: "new" | "legacy";
 }
 
+// 7 catégories propres et tenant-agnostiques. Les anciennes catégories
+// "statiques" / "dynamiques" (héritage Ouate) sont retirées : leur contenu
+// est désormais distribué dans profil_client, parcours et comportement.
 export type CategoryKey =
   | "identification"
+  | "contact"
+  | "parcours"
+  | "profil_client"
   | "persona"
   | "business"
-  | "comportement"
-  | "statiques"
-  | "dynamiques";
+  | "comportement";
 
 export interface CategoryDef {
   key: CategoryKey;
@@ -105,12 +110,23 @@ export interface CategoryDef {
 
 export const CATEGORIES: CategoryDef[] = [
   { key: "identification", label: "Identification & Tracking", color: "#E8E8E8" },
-  { key: "persona", label: "Personas & IA", color: "#EDE0F0" },
-  { key: "business", label: "Business & Conversion", color: "#D5F5E3" },
-  { key: "comportement", label: "Comportement", color: "#FEF3C7" },
-  { key: "statiques", label: "Questions statiques", color: "#DBEAFE" },
-  { key: "dynamiques", label: "Questions dynamiques IA", color: "#FEE2E2" },
+  { key: "contact",        label: "Contact",                   color: "#E3F2FD" },
+  { key: "parcours",       label: "Parcours",                  color: "#FEF3C7" },
+  { key: "profil_client",  label: "Profil client",             color: "#DBEAFE" },
+  { key: "persona",        label: "Personas & IA",             color: "#EDE0F0" },
+  { key: "business",       label: "Business & Conversion",     color: "#D5F5E3" },
+  { key: "comportement",   label: "Comportement",              color: "#FEE2E2" },
 ];
+
+/* ── column_labels_mapping (driven by tenant_config) ───── */
+
+export interface ColumnLabelEntry {
+  label: string;
+  category?: CategoryKey;
+  value_mapping?: Record<string, string>;
+}
+
+export type ColumnLabelsMapping = Record<string, ColumnLabelEntry>;
 
 export const STATUS_LABELS: Record<string, string> = {
   en_cours: "En cours",

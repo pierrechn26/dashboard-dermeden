@@ -3,6 +3,36 @@ import { usePersonaProfiles } from "@/hooks/usePersonaProfiles";
 import { useTenantConfig } from "@/hooks/useTenantConfig";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+import type {
+  DiagnosticSession,
+  DiagnosticItem,
+  CategoryKey,
+  ColumnLabelsMapping,
+} from "@/types/diagnostic";
+import {
+  CATEGORIES,
+  STATUS_LABELS,
+  RELATIONSHIP_LABELS,
+  getSortedItems,
+} from "@/types/diagnostic";
 
 /* ── Adapted tone badge ─────────────────────────────────── */
 
@@ -24,33 +54,6 @@ function AdaptedToneBadge({ value }: { value?: string | null }) {
     </Badge>
   );
 }
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight } from "lucide-react";
-import type { DiagnosticSession, DiagnosticItem, CategoryKey } from "@/types/diagnostic";
-import {
-  CATEGORIES,
-  STATUS_LABELS,
-  RELATIONSHIP_LABELS,
-  getSortedItems,
-  getExtraItemsSummary,
-  getExtraItemsDynamic,
-} from "@/types/diagnostic";
 
 /* ── Display status helper ──────────────────────────────── */
 
@@ -74,6 +77,7 @@ export interface ColumnDef {
 const fmt = (v: unknown): string => {
   if (v === null || v === undefined || v === "") return "—";
   if (typeof v === "boolean") return v ? "✓" : "—";
+  if (Array.isArray(v)) return v.length === 0 ? "—" : v.join(", ");
   return String(v);
 };
 
@@ -101,25 +105,48 @@ const fmtEuro = (v: number | null) => {
   return `${v.toFixed(2)} €`;
 };
 
-/* ── Base columns ──────────────────────────────────────── */
+/* ── Base columns — 7 categories, tenant-agnostic ──────── */
 
 const IDENTIFICATION_COLS: ColumnDef[] = [
-  { key: "session_code", label: "Session ID", category: "identification", getValue: (s) => s.session_code },
-  { key: "date", label: "Date", category: "identification", getValue: (s) => fmtDate(s.created_at) },
-  { key: "heure", label: "Heure", category: "identification", getValue: (s) => fmtTime(s.created_at) },
-  { key: "status", label: "Statut", category: "identification", getValue: (s) => getDisplayStatus(s) },
-  { key: "source", label: "Source", category: "identification", getValue: (s) => fmt(s.source) },
+  { key: "session_code", label: "Session ID",   category: "identification", getValue: (s) => s.session_code },
+  { key: "date",         label: "Date",         category: "identification", getValue: (s) => fmtDate(s.created_at) },
+  { key: "heure",        label: "Heure",        category: "identification", getValue: (s) => fmtTime(s.created_at) },
+  { key: "source",       label: "Source",       category: "identification", getValue: (s) => fmt(s.source) },
   { key: "utm_campaign", label: "UTM Campaign", category: "identification", getValue: (s) => fmt(s.utm_campaign) },
-  { key: "device", label: "Device", category: "identification", getValue: (s) => fmt(s.device) },
-  { key: "user_name", label: "Prénom parent", category: "identification", getValue: (s) => fmt(s.user_name) },
-  { key: "relationship", label: "Lien avec l'enfant", category: "identification", getValue: (s) => RELATIONSHIP_LABELS[s.relationship ?? ""] ?? fmt(s.relationship) },
-  { key: "email", label: "Email", category: "identification", getValue: (s) => fmt(s.email) },
-  { key: "phone", label: "Téléphone", category: "identification", getValue: (s) => fmt(s.phone) },
-  { key: "optin_email", label: "Opt-in Email", category: "identification", getValue: (s) => fmt(s.optin_email) },
-  { key: "optin_sms", label: "Opt-in SMS", category: "identification", getValue: (s) => fmt(s.optin_sms) },
-  { key: "nb_children", label: "Nombre d'enfants", category: "identification", getValue: (s) => fmt(s.number_of_children) },
-  { key: "locale", label: "Langue/Pays", category: "identification", getValue: (s) => fmt(s.locale) },
-  { key: "result_url", label: "Result URL", category: "identification", getValue: (s) => fmt(s.result_url) },
+  { key: "device",       label: "Device",       category: "identification", getValue: (s) => fmt(s.device) },
+  { key: "locale",       label: "Langue/Pays",  category: "identification", getValue: (s) => fmt(s.locale) },
+  { key: "result_url",   label: "Result URL",   category: "identification", getValue: (s) => fmt(s.result_url) },
+];
+
+// user_name (Prénom) is hardcoded in CONTACT_COLS — universal across tenants.
+const CONTACT_COLS: ColumnDef[] = [
+  { key: "user_name",    label: "Prénom",            category: "contact", getValue: (s) => fmt(s.user_name) },
+  { key: "relationship", label: "Lien",              category: "contact", getValue: (s) => RELATIONSHIP_LABELS[s.relationship ?? ""] ?? fmt(s.relationship) },
+  { key: "email",        label: "Email",             category: "contact", getValue: (s) => fmt(s.email) },
+  { key: "phone",        label: "Téléphone",         category: "contact", getValue: (s) => fmt(s.phone) },
+  { key: "optin_email",  label: "Opt-in Email",      category: "contact", getValue: (s) => fmt(s.optin_email) },
+  { key: "optin_sms",    label: "Opt-in SMS",        category: "contact", getValue: (s) => fmt(s.optin_sms) },
+  { key: "nb_children",  label: "Nombre d'items",    category: "contact", getValue: (s) => fmt(s.number_of_children) },
+];
+
+const PARCOURS_COLS: ColumnDef[] = [
+  { key: "status",           label: "Statut",              category: "parcours", getValue: (s) => getDisplayStatus(s) },
+  { key: "duration",         label: "Durée (sec)",         category: "parcours", getValue: (s) => fmt(s.duration_seconds) },
+  { key: "abandoned_step",   label: "Abandon à l'étape",   category: "parcours", getValue: (s) => fmt(s.abandoned_at_step) },
+  { key: "question_path",    label: "Chemin questions",    category: "parcours", getValue: (s) => fmt(s.question_path) },
+  { key: "back_nav",         label: "Retours en arrière",  category: "parcours", getValue: (s) => fmt(s.back_navigation_count) },
+  { key: "optional_details", label: "Détails optionnels",  category: "parcours", getValue: (s) => fmt(s.has_optional_details) },
+];
+
+// PROFIL_CLIENT — generic top-level fields. Tenant-specific fields are added
+// dynamically via buildDynamicMetadataCols (column_labels_mapping).
+const PROFIL_CLIENT_COLS: ColumnDef[] = [
+  { key: "priorities",       label: "Priorités (ordonnées)",   category: "profil_client", getValue: (s) => fmt(s.priorities_ordered) },
+  { key: "trust_triggers",   label: "Éléments de réassurance", category: "profil_client", getValue: (s) => fmt(s.trust_triggers_ordered) },
+  { key: "content_pref",     label: "Format contenu préféré",  category: "profil_client", getValue: (s) => fmt(s.content_format_preference) },
+  { key: "routine_pref",     label: "Routine souhaitée",       category: "profil_client", getValue: (s) => fmt(s.routine_size_preference) },
+  { key: "existing_products",label: "Produits déjà utilisés",  category: "profil_client", getValue: (s) => fmt(s.existing_brand_products) },
+  { key: "is_existing_client", label: "Client existant",       category: "profil_client", getValue: (s) => s.is_existing_client ? "Oui" : "Non" },
 ];
 
 function buildPersonaCols(getLabel: (code: string) => string): ColumnDef[] {
@@ -135,119 +162,132 @@ function buildPersonaCols(getLabel: (code: string) => string): ColumnDef[] {
       },
     },
     { key: "matching_score_col", label: "Matching %", category: "persona", getValue: (s) => s.matching_score != null ? `${s.matching_score}%` : "—" },
-    { key: "adapted_tone", label: "Ton adapté", category: "persona", getValue: (s) => fmt(s.adapted_tone) },
+    { key: "adapted_tone",       label: "Ton adapté", category: "persona", getValue: (s) => fmt(s.adapted_tone) },
+    { key: "tone_label",         label: "Label tonalité", category: "persona", getValue: (s) => fmt(s.tone_label) },
   ];
 }
 
 const BUSINESS_COLS: ColumnDef[] = [
-  { key: "conversion", label: "Conversion", category: "business", getValue: (s) => s.conversion ? "Oui" : "Non" },
-  { key: "exit_type", label: "Type de sortie", category: "business", getValue: (s) => fmt(s.exit_type) },
-  { key: "existing_products", label: "Produits déjà utilisés", category: "business", getValue: (s) => fmt(s.existing_brand_products) },
-  { key: "is_existing_client", label: "Client existant", category: "business", getValue: (s) => s.is_existing_client ? "Oui" : "Non" },
-  { key: "recommended_products", label: "Routine recommandée", category: "business", getValue: (s) => fmt(s.recommended_products) },
-  { key: "recommended_cart", label: "Panier recommandé (€)", category: "business", getValue: (s) => fmtEuro(s.recommended_cart_amount) },
-  { key: "validated_products", label: "Produits achetés", category: "business", getValue: (s) => fmt(s.validated_products) },
-  { key: "validated_cart", label: "Panier validé (€)", category: "business", getValue: (s) => fmtEuro(s.validated_cart_amount) },
-  { key: "upsell_potential", label: "Potentiel upsell", category: "business", getValue: (s) => fmt(s.upsell_potential) },
+  { key: "conversion",           label: "Conversion",           category: "business", getValue: (s) => s.conversion ? "Oui" : "Non" },
+  { key: "exit_type",            label: "Type de sortie",       category: "business", getValue: (s) => fmt(s.exit_type) },
+  { key: "recommended_products", label: "Routine recommandée",  category: "business", getValue: (s) => fmt(s.recommended_products) },
+  { key: "recommended_cart",     label: "Panier recommandé (€)",category: "business", getValue: (s) => fmtEuro(s.recommended_cart_amount) },
+  { key: "validated_products",   label: "Produits achetés",     category: "business", getValue: (s) => fmt(s.validated_products) },
+  { key: "validated_cart",       label: "Panier validé (€)",    category: "business", getValue: (s) => fmtEuro(s.validated_cart_amount) },
+  { key: "upsell_potential",     label: "Potentiel upsell",     category: "business", getValue: (s) => fmt(s.upsell_potential) },
 ];
 
 const COMPORTEMENT_COLS: ColumnDef[] = [
-  { key: "duration", label: "Durée (sec)", category: "comportement", getValue: (s) => fmt(s.duration_seconds) },
-  { key: "abandoned_step", label: "Abandon à l'étape", category: "comportement", getValue: (s) => fmt(s.abandoned_at_step) },
-  { key: "question_path", label: "Chemin questions", category: "comportement", getValue: (s) => fmt(s.question_path) },
-  { key: "back_nav", label: "Retours en arrière", category: "comportement", getValue: (s) => fmt(s.back_navigation_count) },
-  { key: "optional_details", label: "Détails optionnels", category: "comportement", getValue: (s) => fmt(s.has_optional_details) },
-  { key: "behavior_tags", label: "Tags comportementaux", category: "comportement", getValue: (s) => fmt(s.behavior_tags) },
-  { key: "engagement_score", label: "Score engagement (%)", category: "comportement", getValue: (s) => s.engagement_score != null ? `${s.engagement_score}%` : "—" },
+  { key: "behavior_tags",    label: "Tags comportementaux",  category: "comportement", getValue: (s) => fmt(s.behavior_tags) },
+  { key: "engagement_score", label: "Score engagement (%)",  category: "comportement", getValue: (s) => s.engagement_score != null ? `${s.engagement_score}%` : "—" },
 ];
 
-/* ── Item column generators ────────────────────────────── */
+/* ── Dynamic metadata columns ──────────────────────────────
+   Driven by tenant_config.column_labels_mapping (preferred), or by
+   tenant_config.persona_dimension_mapping.need as a legacy fallback.
 
-function itemStaticCols(index: number, dynamicFieldsList: string[]): ColumnDef[] {
-  const label = `Item ${index + 1}`;
-  const getItem = (s: DiagnosticSession): DiagnosticItem | undefined =>
-    getSortedItems(s)[index];
+   For each declared key we look up its value across three locations
+   (first-defined wins):
+     1. session[key]                  (top-level column)
+     2. items[0].item_metadata[key]   (primary item)
+     3. session.client_context_json[key]  -- skipped, dashboard-side
 
-  // Universal field always present at the top level of diagnostic_items rows
-  const universal: ColumnDef[] = [
-    { key: `c${index}_label`, label: `${label} — Libellé`, category: "statiques", getValue: (s) => fmt(getItem(s)?.item_label) },
-  ];
+   Values can be remapped via value_mapping for human-readable display.
+   ──────────────────────────────────────────────────────── */
 
-  // Dynamic fields driven by tenant_config.persona_dimension_mapping.need.
-  // Each entry corresponds to a key inside the diagnostic_items.item_metadata JSONB.
-  // For Ouate this gives skin_concern, age_range, has_routine, etc.
-  // For another tenant, it gives whatever they configured — automatically.
-  const dynamic: ColumnDef[] = dynamicFieldsList.map((field) => ({
-    key: `c${index}_${field}`,
-    label: `${label} — ${field}`,
-    category: "statiques" as CategoryKey,
-    getValue: (s: DiagnosticSession) => fmt(getItem(s)?.item_metadata?.[field]),
-  }));
+function resolveMetadataValue(session: DiagnosticSession, key: string): unknown {
+  // 1. Top-level column on diagnostic_sessions
+  const top = (session as unknown as Record<string, unknown>)[key];
+  if (top !== undefined && top !== null && top !== "") return top;
 
-  return [...universal, ...dynamic];
+  // 2. Primary item's metadata JSONB
+  const items = getSortedItems(session);
+  const meta0 = items[0]?.item_metadata;
+  if (meta0 && key in meta0) {
+    const v = (meta0 as Record<string, unknown>)[key];
+    if (v !== undefined && v !== null && v !== "") return v;
+  }
+
+  // 3. Any subsequent item that has it (for tenants that vary by item)
+  for (const it of items.slice(1)) {
+    if (it.item_metadata && key in it.item_metadata) {
+      const v = (it.item_metadata as Record<string, unknown>)[key];
+      if (v !== undefined && v !== null && v !== "") return v;
+    }
+  }
+  return null;
 }
 
-function itemDynamicCols(index: number): ColumnDef[] {
-  const label = `Item ${index + 1}`;
-  const getItem = (s: DiagnosticSession): DiagnosticItem | undefined =>
-    getSortedItems(s)[index];
+const VALID_CATEGORIES: ReadonlySet<CategoryKey> = new Set<CategoryKey>([
+  "identification", "contact", "parcours", "profil_client",
+  "persona", "business", "comportement",
+]);
 
-  return [
-    { key: `c${index}_dq1`, label: `${label} — Q IA 1`, category: "dynamiques", getValue: (s) => fmt(getItem(s)?.dynamic_question_1) },
-    { key: `c${index}_da1`, label: `${label} — R IA 1`, category: "dynamiques", getValue: (s) => fmt(getItem(s)?.dynamic_answer_1) },
-    { key: `c${index}_dq2`, label: `${label} — Q IA 2`, category: "dynamiques", getValue: (s) => fmt(getItem(s)?.dynamic_question_2) },
-    { key: `c${index}_da2`, label: `${label} — R IA 2`, category: "dynamiques", getValue: (s) => fmt(getItem(s)?.dynamic_answer_2) },
-    { key: `c${index}_dq3`, label: `${label} — Q IA 3`, category: "dynamiques", getValue: (s) => fmt(getItem(s)?.dynamic_question_3) },
-    { key: `c${index}_da3`, label: `${label} — R IA 3`, category: "dynamiques", getValue: (s) => fmt(getItem(s)?.dynamic_answer_3) },
-    { key: `c${index}_insights`, label: `${label} — Insight targets`, category: "dynamiques", getValue: (s) => fmt(getItem(s)?.dynamic_insight_targets) },
-  ];
+function buildDynamicMetadataCols(
+  mapping: ColumnLabelsMapping | null | undefined,
+  legacyFields: string[]
+): ColumnDef[] {
+  // Preferred path: column_labels_mapping is populated by the tenant
+  if (mapping && Object.keys(mapping).length > 0) {
+    return Object.entries(mapping).map(([key, entry]) => {
+      const cat: CategoryKey = (entry.category && VALID_CATEGORIES.has(entry.category as CategoryKey))
+        ? (entry.category as CategoryKey)
+        : "profil_client";
+      const valueMap = entry.value_mapping;
+      return {
+        key: `meta_${key}`,
+        label: entry.label || key,
+        category: cat,
+        getValue: (s: DiagnosticSession) => {
+          const raw = resolveMetadataValue(s, key);
+          if (raw === null) return "—";
+          if (valueMap && typeof raw === "string" && valueMap[raw]) return valueMap[raw];
+          if (Array.isArray(raw) && valueMap) {
+            return raw.map((v) => valueMap[String(v)] ?? String(v)).join(", ");
+          }
+          return fmt(raw);
+        },
+      };
+    });
+  }
+
+  // Legacy fallback: persona_dimension_mapping.need
+  return legacyFields.map((key) => ({
+    key: `meta_${key}`,
+    label: key,
+    category: "profil_client" as CategoryKey,
+    getValue: (s: DiagnosticSession) => fmt(resolveMetadataValue(s, key)),
+  }));
 }
 
 /* ── Build all columns ─────────────────────────────────── */
 
-function buildAllColumns(getLabel: (code: string) => string, dynamicFieldsList: string[]): ColumnDef[] {
-  const cols: ColumnDef[] = [
-    ...IDENTIFICATION_COLS,
-    ...buildPersonaCols(getLabel),
-    ...BUSINESS_COLS,
-    ...COMPORTEMENT_COLS,
+function buildAllColumns(
+  getLabel: (code: string) => string,
+  dynamicFields: string[],
+  columnLabelsMapping: ColumnLabelsMapping | null
+): ColumnDef[] {
+  const dynamic = buildDynamicMetadataCols(columnLabelsMapping, dynamicFields);
+
+  // Distribute dynamic cols by their declared category so they appear inside
+  // the right category band. Default category is profil_client.
+  const dynamicByCat = new Map<CategoryKey, ColumnDef[]>();
+  for (const col of dynamic) {
+    const arr = dynamicByCat.get(col.category) ?? [];
+    arr.push(col);
+    dynamicByCat.set(col.category, arr);
+  }
+  const dyn = (cat: CategoryKey): ColumnDef[] => dynamicByCat.get(cat) ?? [];
+
+  return [
+    ...IDENTIFICATION_COLS, ...dyn("identification"),
+    ...CONTACT_COLS,        ...dyn("contact"),
+    ...PARCOURS_COLS,       ...dyn("parcours"),
+    ...PROFIL_CLIENT_COLS,  ...dyn("profil_client"),
+    ...buildPersonaCols(getLabel), ...dyn("persona"),
+    ...BUSINESS_COLS,       ...dyn("business"),
+    ...COMPORTEMENT_COLS,   ...dyn("comportement"),
   ];
-
-  // Static item columns (1-4) — dynamic fields driven by tenant_config
-  for (let i = 0; i < 4; i++) {
-    cols.push(...itemStaticCols(i, dynamicFieldsList));
-  }
-
-  // Global static questions
-  cols.push(
-    { key: "routine_pref", label: "Routine souhaitée", category: "statiques", getValue: (s) => fmt(s.routine_size_preference) },
-    { key: "priorities", label: "Priorités (ordonnées)", category: "statiques", getValue: (s) => fmt(s.priorities_ordered) },
-    { key: "trust_triggers", label: "Éléments de réassurance", category: "statiques", getValue: (s) => fmt(s.trust_triggers_ordered) },
-    { key: "content_pref", label: "Format contenu préféré", category: "statiques", getValue: (s) => fmt(s.content_format_preference) },
-  );
-
-  // Extra items (5+) summary
-  cols.push({
-    key: "extra_children",
-    label: "Items supplémentaires (5+)",
-    category: "statiques",
-    getValue: getExtraItemsSummary,
-  });
-
-  // Dynamic item columns (1-4)
-  for (let i = 0; i < 4; i++) {
-    cols.push(...itemDynamicCols(i));
-  }
-
-  // Extra items dynamic
-  cols.push({
-    key: "extra_children_dynamic",
-    label: "Items 5+ — Réponses IA",
-    category: "dynamiques",
-    getValue: getExtraItemsDynamic,
-  });
-
-  return cols;
 }
 
 /* ── Compute category spans for the grouped header row ── */
@@ -292,9 +332,10 @@ export function SessionsTable({ sessions, searchTerm, dateFrom, dateTo, statusFi
     () => tenantConfig?.persona_dimension_mapping?.need || [],
     [tenantConfig]
   );
+  const columnLabelsMapping = (tenantConfig?.column_labels_mapping ?? null) as ColumnLabelsMapping | null;
   const columns = useMemo(
-    () => buildAllColumns(getLabel, dynamicFields),
-    [getLabel, dynamicFields]
+    () => buildAllColumns(getLabel, dynamicFields, columnLabelsMapping),
+    [getLabel, dynamicFields, columnLabelsMapping]
   );
   const spans = useMemo(() => getCategorySpans(columns), [columns]);
   const [pageSize, setPageSize] = useState<number>(20);
@@ -314,18 +355,15 @@ export function SessionsTable({ sessions, searchTerm, dateFrom, dateTo, statusFi
   const filtered = useMemo(() => {
     let result = sessions;
 
-    // Status filter
     if (statusFilter && statusFilter !== "all") {
       result = result.filter((s) => getDisplayStatus(s) === statusFilter);
     }
 
-    // Conversion filter
     if (conversionFilter && conversionFilter !== "all") {
       const val = conversionFilter === "oui";
       result = result.filter((s) => s.conversion === val);
     }
 
-    // Search filter
     if (searchTerm) {
       const q = searchTerm.toLowerCase();
       result = result.filter(
@@ -337,7 +375,6 @@ export function SessionsTable({ sessions, searchTerm, dateFrom, dateTo, statusFi
       );
     }
 
-    // Date range filter (using Europe/Paris timezone)
     if (dateFrom) {
       result = result.filter((s) => {
         if (!s.created_at) return false;
@@ -359,7 +396,6 @@ export function SessionsTable({ sessions, searchTerm, dateFrom, dateTo, statusFi
       });
     }
 
-    // Sorting
     const sorted = [...result].sort((a, b) => {
       let cmp = 0;
       if (sortKey === "date") {
@@ -375,7 +411,6 @@ export function SessionsTable({ sessions, searchTerm, dateFrom, dateTo, statusFi
     return sorted;
   }, [sessions, searchTerm, dateFrom, dateTo, statusFilter, conversionFilter, sortKey, sortDir]);
 
-  // Reset page when filters change
   useMemo(() => {
     setCurrentPage(1);
   }, [searchTerm, dateFrom, dateTo, pageSize, statusFilter, conversionFilter]);
@@ -581,6 +616,14 @@ export function SessionsTable({ sessions, searchTerm, dateFrom, dateTo, statusFi
 
 /* ── Export helpers (used by ResponsesSection) ─────────── */
 
-export function getColumnDefs(getLabel?: (code: string) => string, dynamicFields?: string[]) {
-  return buildAllColumns(getLabel ?? ((code) => code), dynamicFields ?? []);
+export function getColumnDefs(
+  getLabel?: (code: string) => string,
+  dynamicFields?: string[],
+  columnLabelsMapping?: ColumnLabelsMapping | null
+) {
+  return buildAllColumns(
+    getLabel ?? ((code) => code),
+    dynamicFields ?? [],
+    columnLabelsMapping ?? null
+  );
 }
