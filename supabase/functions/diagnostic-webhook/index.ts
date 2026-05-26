@@ -585,7 +585,7 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
 
   // Recompute engagement_score if not provided by the payload.
   if (sessionData.engagement_score === null || sessionData.engagement_score === undefined) {
-    sessionData.engagement_score = computeEngagementScore(sessionData);
+    sessionData.engagement_score = computeEngagementScore(sessionData, payload, payloadItems);
   }
 
   const { data: session, error: sessionError } = await supabase
