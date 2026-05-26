@@ -337,7 +337,7 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
     // Cf. backlog #2.10: protectExitType enforces the linear progression
     // null → abandon → completed → checkout → converted.
     exit_type: protectExitType(existing?.exit_type, payload.exit_type),
-    existing_client_products: coalesce("existing_client_products"),
+    existing_brand_products: coalesce("existing_brand_products") ?? coalesce("existing_client_products"),
     is_existing_client: coalesce("is_existing_client", false),
     recommended_cart_amount: coalesce("recommended_cart_amount"),
     recommended_products: coalesce("recommended_products"),
@@ -411,13 +411,10 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
 
   console.log("[diagnostic-webhook] Session saved:", session.id);
 
-  // Items: delete-then-insert for idempotent upserts
+  // Items: native UPSERT on (session_id, item_index) — idempotent without
+  // a destructive delete window. Backlog: avoids race conditions where a
+  // late payload could wipe items from a concurrent payload before reinsert.
   if (Array.isArray(payloadItems) && payloadItems.length > 0) {
-    await supabase
-      .from("diagnostic_items")
-      .delete()
-      .eq("session_id", session.id);
-
     // Top-level columns in diagnostic_items (universal, not tenant-specific)
     const TOP_LEVEL_KEYS = new Set([
       "item_index", "item_label",
@@ -441,7 +438,7 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
         session_id: session.id,
         item_index: c.item_index ?? 0,
         item_label: c.item_label ?? null,
-        item_metadata: Object.keys(metadata).length > 0 ? metadata : {},
+        item_metadata: Object.keys(metadata).length > 0 ? metadata : (c.item_metadata || {}),
         dynamic_question_1: c.dynamic_question_1 ?? null,
         dynamic_answer_1: c.dynamic_answer_1 ?? null,
         dynamic_question_2: c.dynamic_question_2 ?? null,
@@ -454,7 +451,7 @@ async function handleNewFormat(supabase: SupabaseClient, payload: any) {
 
     const { error: itemsError } = await supabase
       .from("diagnostic_items")
-      .insert(itemRows);
+      .upsert(itemRows, { onConflict: "session_id,item_index", ignoreDuplicates: false });
 
     if (itemsError) {
       console.error("[diagnostic-webhook] Items insert error:", itemsError);
@@ -525,12 +522,16 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Validate webhook secret
+    // Validate webhook secret — prefer DASHBOARD_WEBHOOK_SECRET (template
+    // canonical name). Falls back to legacy DIAGNOSTIC_WEBHOOK_SECRET for
+    // projects remixed before the rename.
     const webhookSecret = req.headers.get("x-webhook-secret");
-    const expectedSecret = Deno.env.get("DIAGNOSTIC_WEBHOOK_SECRET");
+    const expectedSecret =
+      Deno.env.get("DASHBOARD_WEBHOOK_SECRET") ??
+      Deno.env.get("DIAGNOSTIC_WEBHOOK_SECRET");
 
     if (!expectedSecret) {
-      console.error("[diagnostic-webhook] DIAGNOSTIC_WEBHOOK_SECRET not configured");
+      console.error("[diagnostic-webhook] DASHBOARD_WEBHOOK_SECRET not configured");
       return jsonResponse({ error: "Server configuration error" }, 500);
     }
     if (webhookSecret !== expectedSecret) {

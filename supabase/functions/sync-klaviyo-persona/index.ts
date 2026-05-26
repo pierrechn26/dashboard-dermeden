@@ -157,7 +157,7 @@ Deno.serve(async (req) => {
       ...(session.selected_cart_amount && { selected_cart_amount: session.selected_cart_amount }),
 
       // Produits existants
-      ...(session.existing_client_products && { existing_client_products: session.existing_client_products }),
+      ...(session.existing_brand_products && { existing_brand_products: session.existing_brand_products }),
 
       // Comportement
       ...(session.duration_seconds !== null && session.duration_seconds !== undefined && { diagnostic_duration_seconds: session.duration_seconds }),

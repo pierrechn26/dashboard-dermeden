@@ -281,16 +281,17 @@ Deno.serve(async (req) => {
       for (const s of sessions) {
         // Generic agnostic mapping: spread item_metadata JSONB so all tenant-specific
         // fields are exposed transparently to the frontend without hardcoding.
+        // Also keep item_metadata explicit so consumers that prefer the raw
+        // JSONB object can read it directly.
         const items = ((s.diagnostic_items || []) as any[])
           .sort((a: any, b: any) => (a.item_index ?? 0) - (b.item_index ?? 0))
           .map((c: any) => ({
             item_index: c.item_index,
-            // Generic identifiers (always present at top-level of diagnostic_items)
-            first_name: c.first_name,
-            birth_date: c.birth_date,
-            age: c.age,
-            // All other tenant-specific fields are spread from JSONB
+            item_label: c.item_label,
+            // All tenant-specific fields are spread from JSONB for flat access
             ...(c.item_metadata || {}),
+            // Explicit raw metadata object for consumers that prefer nested access
+            item_metadata: c.item_metadata || {},
             // Ordered/derived fields that may be at top-level or in metadata
             dynamic_question_1: c.dynamic_question_1,
             dynamic_answer_1: c.dynamic_answer_1,
@@ -325,7 +326,7 @@ Deno.serve(async (req) => {
           ai_suggested_segment: s.ai_suggested_segment,
           conversion: s.conversion,
           exit_type: s.exit_type,
-          existing_client_products: s.existing_client_products,
+          existing_brand_products: s.existing_brand_products,
           is_existing_client: s.is_existing_client,
           recommended_products: s.recommended_products,
           recommended_cart_amount: s.recommended_cart_amount,
@@ -345,7 +346,7 @@ Deno.serve(async (req) => {
           content_format_preference: s.content_format_preference,
           persona_code: s.persona_code ?? null,
           matching_score: s.matching_score ?? null,
-          children,
+          items,
           _source: "new",
         });
       }
