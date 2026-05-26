@@ -108,11 +108,23 @@ Deno.serve(async (req) => {
       .join(", ");
     const orderEmailLower = order.email ? String(order.email).toLowerCase() : null;
 
-    // --- Look for _diag_session in line item properties ---
-    const diagSession = (order.line_items || [])
+    // --- Look for _diag_session in line item properties (Étape 1) ---
+    let diagSession = (order.line_items || [])
       .flatMap((item: { properties?: Array<{ name: string; value: string }> }) => item.properties || [])
       .find((prop: { name: string; value: string }) => prop.name === "_diag_session")
       ?.value;
+
+    // --- Fallback: look in note_attributes (Étape 2 — dual-injection convention) ---
+    // Certaines apps tierces (bundles, upsells) écrasent line_items[].properties[].
+    // Le cart-level note_attributes fournit une redondance robuste.
+    if (!diagSession) {
+      diagSession = (order.note_attributes || [])
+        .find((attr: { name: string; value: string }) => attr.name === "lim_session_id" || attr.name === "_diag_session")
+        ?.value;
+      if (diagSession) {
+        console.log(`Found session reference in note_attributes: ${diagSession}`);
+      }
+    }
 
     let matched = false;
     let isFromDiagnostic = false;
