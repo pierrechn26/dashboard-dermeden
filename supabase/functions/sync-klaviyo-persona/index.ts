@@ -25,6 +25,52 @@ const OLD_PROPERTIES_TO_UNSET = [
   "item_1_usage", "item_2_usage", "item_3_usage", "item_4_usage",
 ];
 
+/* ============================================================
+   SESSION-LEVEL LABEL MAP — maps raw session keys to "AskIt —" labels
+   ============================================================ */
+const SESSION_LABEL_MAP: Record<string, string> = {
+  session_code: "Session",
+  status: "Statut",
+  locale: "Langue",
+  source: "Source",
+  device: "Appareil",
+  last_diagnostic_date: "Date dernier diagnostic",
+  persona: "Persona",
+  persona_code: "Code persona",
+  adapted_tone: "Ton adapté",
+  tone_label: "Ton label",
+  matching_score: "Matching (%)",
+  engagement_score: "Score engagement (%)",
+  conversion_status: "Conversion",
+  is_existing_client: "Client existant",
+  exit_type: "Type de sortie",
+  recommended_products: "Produits recommandés",
+  recommended_cart_amount: "Montant panier recommandé",
+  upsell_potential: "Potentiel upsell",
+  validated_products: "Produits validés",
+  validated_cart_amount: "Montant validé",
+  selected_cart_amount: "Montant sélectionné",
+  existing_brand_products: "Produits existants",
+  diagnostic_duration_seconds: "Durée diagnostic (sec)",
+  abandoned_at_step: "Étape d'abandon",
+  back_navigation_count: "Retours en arrière",
+  questions_path: "Parcours questions",
+  optin_email: "Opt-in email",
+  optin_sms: "Opt-in SMS",
+  result_url: "URL résultats",
+  utm_source: "UTM source",
+  utm_medium: "UTM medium",
+  utm_campaign: "UTM campaign",
+  utm_content: "UTM content",
+  utm_term: "UTM term",
+};
+
+const STATUS_VALUE_MAP: Record<string, string> = {
+  en_cours: "En cours",
+  termine: "Terminé",
+  abandonne: "Abandonné",
+};
+
 function translateExitType(exitType: string | null): string {
   const map: Record<string, string> = {
     cta_principal: "CTA Principal",
@@ -61,6 +107,38 @@ function normalizePhoneE164(raw: string | null | undefined): string | null {
   return null;
 }
 
+/**
+ * Apply column_labels_mapping to translate a raw key + value into
+ * "AskIt — {label}" format with translated values.
+ */
+function applyMapping(
+  key: string,
+  value: unknown,
+  mapping: Record<string, { label: string; value_mapping?: Record<string, string> }>
+): { label: string; translatedValue: unknown } {
+  const entry = mapping[key];
+  if (!entry) {
+    return { label: `AskIt — ${key}`, translatedValue: value };
+  }
+
+  const label = `AskIt — ${entry.label}`;
+
+  if (entry.value_mapping && value !== null && value !== undefined) {
+    const strVal = String(value);
+    // Handle comma-separated values (e.g. "stress,smoking")
+    if (strVal.includes(",")) {
+      const parts = strVal.split(",").map((p) => p.trim());
+      const translated = parts.map((p) => entry.value_mapping![p] ?? p);
+      return { label, translatedValue: translated.join(", ") };
+    }
+    if (entry.value_mapping[strVal] !== undefined) {
+      return { label, translatedValue: entry.value_mapping[strVal] };
+    }
+  }
+
+  return { label, translatedValue: value };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -91,6 +169,21 @@ Deno.serve(async (req) => {
     const klaviyoApiKey = Deno.env.get("KLAVIYO_API_KEY")!;
 
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    // 0. Load tenant_config for klaviyo_list_id + column_labels_mapping
+    const { data: tenantConfig } = await supabase
+      .from("tenant_config")
+      .select("klaviyo_list_id, column_labels_mapping")
+      .limit(1)
+      .maybeSingle();
+    const klaviyoListId = tenantConfig?.klaviyo_list_id;
+    const columnLabelsMapping = (tenantConfig?.column_labels_mapping ?? {}) as Record<
+      string,
+      { label: string; category?: string; value_mapping?: Record<string, string> }
+    >;
+    if (!klaviyoListId) {
+      console.error("[sync-klaviyo-persona] No klaviyo_list_id in tenant_config");
+    }
 
     // 1. Load session
     const { data: session, error: sessionError } = await supabase
@@ -139,26 +232,22 @@ Deno.serve(async (req) => {
       .eq("session_id", session_id)
       .order("item_index", { ascending: true });
 
-    // 5. Flatten item_metadata
-    // Generic agnostic spread: tenant-specific keys flow through to Klaviyo
-    // automatically. We prefer `meta.answers` (canonical answers shape) when
-    // it's an object; otherwise we spread `meta` directly.
-    const itemsDynamicProps: Record<string, unknown> = {};
-    const itemsEnrichmentProps: Record<string, unknown> = {};
+    // 5. Flatten item_metadata and apply column_labels_mapping
+    const itemsMappedProps: Record<string, unknown> = {};
     const usePrefix = (items?.length ?? 0) > 1;
 
     (items || []).forEach((item, index) => {
       const prefix = usePrefix ? `item_${index + 1}_` : "";
       const meta = (item.item_metadata || {}) as Record<string, unknown>;
 
-      // Dynamic questions/answers (top-level on the item row)
-      if (item.dynamic_question_1) itemsDynamicProps[`${prefix}dynamic_q1`] = item.dynamic_question_1;
-      if (item.dynamic_answer_1) itemsDynamicProps[`${prefix}dynamic_a1`] = item.dynamic_answer_1;
-      if (item.dynamic_question_2) itemsDynamicProps[`${prefix}dynamic_q2`] = item.dynamic_question_2;
-      if (item.dynamic_answer_2) itemsDynamicProps[`${prefix}dynamic_a2`] = item.dynamic_answer_2;
-      if (item.dynamic_question_3) itemsDynamicProps[`${prefix}dynamic_q3`] = item.dynamic_question_3;
-      if (item.dynamic_answer_3) itemsDynamicProps[`${prefix}dynamic_a3`] = item.dynamic_answer_3;
-      if (item.dynamic_insight_targets) itemsDynamicProps[`${prefix}insight_targets`] = item.dynamic_insight_targets;
+      // Dynamic questions/answers
+      if (item.dynamic_question_1) itemsMappedProps[`${prefix}AskIt — Question IA 1`] = item.dynamic_question_1;
+      if (item.dynamic_answer_1) itemsMappedProps[`${prefix}AskIt — Réponse IA 1`] = item.dynamic_answer_1;
+      if (item.dynamic_question_2) itemsMappedProps[`${prefix}AskIt — Question IA 2`] = item.dynamic_question_2;
+      if (item.dynamic_answer_2) itemsMappedProps[`${prefix}AskIt — Réponse IA 2`] = item.dynamic_answer_2;
+      if (item.dynamic_question_3) itemsMappedProps[`${prefix}AskIt — Question IA 3`] = item.dynamic_question_3;
+      if (item.dynamic_answer_3) itemsMappedProps[`${prefix}AskIt — Réponse IA 3`] = item.dynamic_answer_3;
+      if (item.dynamic_insight_targets) itemsMappedProps[`${prefix}AskIt — Cibles IA`] = item.dynamic_insight_targets;
 
       // Choose source: meta.answers if object, else meta
       const answersBlock = (meta as Record<string, unknown>).answers;
@@ -167,35 +256,41 @@ Deno.serve(async (req) => {
           ? (answersBlock as Record<string, unknown>)
           : meta;
 
+      // Keys already handled at profile level or not relevant as properties
+      const SKIP_KEYS = new Set([
+        "email", "phone", "optin", "user_name", "first_name",
+        "answers", "raw", "recommendations",
+      ]);
+
       for (const [key, value] of Object.entries(source)) {
         if (value === null || value === undefined) continue;
         if (key.startsWith("_")) continue; // skip _raw, _recommendations, etc.
+        if (SKIP_KEYS.has(key)) continue;
+
+        let finalValue: unknown = value;
 
         if (Array.isArray(value)) {
-          // Arrays of objects → skip; arrays of primitives → CSV join
           const hasObject = value.some(
             (v) => v !== null && typeof v === "object"
           );
           if (hasObject) continue;
-          itemsEnrichmentProps[`${prefix}${key}`] = value.join(",");
-          continue;
+          finalValue = value.join(",");
+        } else if (typeof value === "object") {
+          continue; // skip nested blobs
+        } else if (typeof value === "boolean") {
+          finalValue = value ? "Oui" : "Non";
         }
 
-        if (typeof value === "object") continue; // skip nested blobs
-
-        itemsEnrichmentProps[`${prefix}${key}`] =
-          typeof value === "boolean" ? (value ? "Oui" : "Non") : value;
+        // Apply column_labels_mapping
+        const { label, translatedValue } = applyMapping(key, finalValue, columnLabelsMapping);
+        itemsMappedProps[`${prefix}${label}`] = translatedValue;
       }
     });
 
-    // 6. Build properties
-    const properties: Record<string, unknown> = {
-      // Source tag — Klaviyo rejects $source as an attribute, OK as a property
-      $source: "Diagnostic Ask-it",
-
-      // Identification & Tracking
+    // 6. Build properties with "AskIt —" prefix
+    const rawProps: Record<string, unknown> = {
       session_code: session.session_code,
-      status: session.status,
+      status: STATUS_VALUE_MAP[session.status] ?? session.status,
       locale: session.locale,
       source: session.source,
       device: session.device,
@@ -205,52 +300,61 @@ Deno.serve(async (req) => {
       utm_campaign: session.utm_campaign ?? null,
       utm_content: session.utm_content ?? null,
       utm_term: session.utm_term ?? null,
-      gclid: session.gclid ?? null,
-      fbclid: session.fbclid ?? null,
       result_url: session.result_url ?? null,
-
-      // Contact
-      user_name: session.user_name ?? null,
-
-      // Persona & IA
       persona: personaFullLabel,
       persona_code: session.persona_code,
       adapted_tone: session.adapted_tone || null,
       tone_label: session.tone_label ?? null,
-
-      ...(session.matching_score !== null && session.matching_score !== undefined && { matching_score: session.matching_score }),
-      ...(session.engagement_score !== null && session.engagement_score !== undefined && { engagement_score: session.engagement_score }),
-
-      // Business & Conversion
+      matching_score: session.matching_score ?? null,
+      engagement_score: session.engagement_score ?? null,
       conversion_status: session.conversion ? "Oui" : "Non",
       is_existing_client: session.is_existing_client ? "Oui" : "Non",
       exit_type: translateExitType(session.exit_type),
-
-      ...(session.recommended_products && { recommended_products: session.recommended_products }),
-      ...(session.recommended_cart_amount !== null && session.recommended_cart_amount !== undefined && { recommended_cart_amount: session.recommended_cart_amount }),
-      ...(session.upsell_potential && { upsell_potential: translateUpsell(session.upsell_potential) }),
-
-      ...(session.validated_products && { validated_products: session.validated_products }),
-      ...(session.validated_cart_amount && { validated_cart_amount: session.validated_cart_amount }),
-      ...(session.selected_cart_amount && { selected_cart_amount: session.selected_cart_amount }),
-
-      // Correct generic column name (NOT existing_client_products)
-      ...(session.existing_brand_products && { existing_brand_products: session.existing_brand_products }),
-
-      // Comportement
-      ...(session.duration_seconds !== null && session.duration_seconds !== undefined && { diagnostic_duration_seconds: session.duration_seconds }),
+      recommended_products: session.recommended_products ?? null,
+      recommended_cart_amount: session.recommended_cart_amount ?? null,
+      upsell_potential: session.upsell_potential ? translateUpsell(session.upsell_potential) : null,
+      validated_products: session.validated_products ?? null,
+      validated_cart_amount: session.validated_cart_amount ?? null,
+      selected_cart_amount: session.selected_cart_amount ?? null,
+      existing_brand_products: session.existing_brand_products ?? null,
+      diagnostic_duration_seconds: session.duration_seconds ?? null,
       abandoned_at_step: session.abandoned_at_step ?? null,
       back_navigation_count: session.back_navigation_count ?? null,
       questions_path: session.question_path ?? null,
-
-      // Opt-in (informational mirrors)
       optin_email: session.optin_email ? "Oui" : "Non",
       optin_sms: session.optin_sms ? "Oui" : "Non",
-
-      // Items — dynamic IA + flattened metadata
-      ...itemsDynamicProps,
-      ...itemsEnrichmentProps,
     };
+
+    // Transform raw session props to "AskIt — {label}" format
+    const properties: Record<string, unknown> = {
+      $source: "Diagnostic Ask-it",
+    };
+
+    for (const [key, value] of Object.entries(rawProps)) {
+      if (value === null || value === undefined) continue;
+      const labelName = SESSION_LABEL_MAP[key];
+      if (labelName) {
+        properties[`AskIt — ${labelName}`] = value;
+      } else {
+        properties[key] = value;
+      }
+    }
+
+    // Add mapped item metadata properties
+    Object.assign(properties, itemsMappedProps);
+
+    // Build the unset list: all possible "AskIt —" properties MINUS the ones
+    // we are setting in this request. This ensures old diagnostic-path
+    // properties are removed while current ones are preserved.
+    const currentPropertyKeys = new Set(Object.keys(properties));
+    const allPossibleAskitProps: string[] = [
+      ...Object.values(SESSION_LABEL_MAP).map((label) => `AskIt — ${label}`),
+      ...Object.values(columnLabelsMapping).map((entry) => `AskIt — ${entry.label}`),
+    ];
+    const askitPropsToUnset = allPossibleAskitProps.filter(
+      (prop) => !currentPropertyKeys.has(prop)
+    );
+    const fullUnsetList = [...OLD_PROPERTIES_TO_UNSET, ...askitPropsToUnset];
 
     const klaviyoPayload = {
       data: {
@@ -258,13 +362,14 @@ Deno.serve(async (req) => {
         attributes: {
           email: normalizedEmail,
           ...(phoneE164 && { phone_number: phoneE164 }),
+          first_name: session.user_name ?? undefined,
           properties,
         },
         meta: {
           patch_properties: {
             append: {},
             unappend: {},
-            unset: OLD_PROPERTIES_TO_UNSET,
+            unset: fullUnsetList,
           },
         },
       },
@@ -329,7 +434,7 @@ Deno.serve(async (req) => {
 
     // 8. Subscriptions (best-effort, non-blocking). SMS only when we have a
     // properly normalized E.164 phone.
-    if (session.optin_email || (session.optin_sms && phoneE164)) {
+    if (klaviyoListId && (session.optin_email || (session.optin_sms && phoneE164))) {
       // deno-lint-ignore no-explicit-any
       const subscriptions: any = {};
       if (session.optin_email) {
@@ -356,7 +461,7 @@ Deno.serve(async (req) => {
           },
           relationships: {
             list: {
-              data: { type: "list", id: "TExMiq" },
+              data: { type: "list", id: klaviyoListId },
             },
           },
         },
@@ -377,6 +482,47 @@ Deno.serve(async (req) => {
       } catch (subErr) {
         console.error("[sync-klaviyo-persona] Klaviyo subscribe failed (non-blocking):", subErr);
       }
+    }
+
+    // 9. Fire "ASKIT diagnostic complété" event for flow re-triggering
+    try {
+      const eventPayload = {
+        data: {
+          type: "event",
+          attributes: {
+            metric: { data: { type: "metric", attributes: { name: "ASKIT diagnostic complété" } } },
+            profile: { data: { type: "profile", attributes: { email: normalizedEmail } } },
+            properties: {
+              session_code: session.session_code,
+              persona: personaFullLabel,
+              persona_code: session.persona_code,
+              source: session.source ?? null,
+              device: session.device ?? null,
+              conversion: session.conversion ? "Oui" : "Non",
+              recommended_products: session.recommended_products ?? null,
+              recommended_cart_amount: session.recommended_cart_amount ?? null,
+              exit_type: translateExitType(session.exit_type),
+              engagement_score: session.engagement_score ?? null,
+              result_url: session.result_url ?? null,
+            },
+            time: new Date().toISOString(),
+          },
+        },
+      };
+
+      const eventResp = await fetch("https://a.klaviyo.com/api/events/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Klaviyo-API-Key ${klaviyoApiKey}`,
+          revision: "2024-02-15",
+        },
+        body: JSON.stringify(eventPayload),
+      });
+      const eventBody = await eventResp.text();
+      console.log("[sync-klaviyo-persona] Klaviyo event response:", eventResp.status, eventBody);
+    } catch (eventErr) {
+      console.error("[sync-klaviyo-persona] Klaviyo event failed (non-blocking):", eventErr);
     }
 
     console.log("[sync-klaviyo-persona] Profile updated for session:", session_id, "persona:", session.persona_code, "email:", normalizedEmail);

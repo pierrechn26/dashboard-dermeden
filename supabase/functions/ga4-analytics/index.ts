@@ -1,4 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { loadTenantConfig } from "../_shared/loadTenantConfig.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -7,7 +9,65 @@ const corsHeaders = {
 };
 
 /* ------------------------------------------------------------------ */
-/*  JWT helpers – sign a Google service-account JWT with Web Crypto   */
+/*  Shopify Analytics via ShopifyQL (preferred when available)         */
+/* ------------------------------------------------------------------ */
+
+async function fetchShopifyAnalytics(
+  shopifyStore: string,
+  shopifyToken: string,
+  startDate: string,
+  endDate: string,
+): Promise<{ site_sessions: number; diagnostic_page_sessions: number; conversion_rate: number; bounce_rate: number }> {
+  const query = `FROM sessions SHOW sessions, conversion_rate, bounce_rate SINCE ${startDate} UNTIL ${endDate}`;
+
+  const res = await fetch(
+    `https://${shopifyStore}/admin/api/unstable/graphql.json`,
+    {
+      method: "POST",
+      headers: {
+        "X-Shopify-Access-Token": shopifyToken,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        query: `{ shopifyqlQuery(query: "${query}") { parseErrors tableData { columns { name dataType } rows } } }`,
+      }),
+    },
+  );
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Shopify GraphQL error: ${res.status} – ${text}`);
+  }
+
+  const data = await res.json();
+  const shopifyql = data?.data?.shopifyqlQuery;
+
+  if (shopifyql?.parseErrors?.length && shopifyql.parseErrors[0]) {
+    throw new Error(`ShopifyQL parse error: ${shopifyql.parseErrors.join(", ")}`);
+  }
+
+  const rows = shopifyql?.tableData?.rows;
+  if (!rows || rows.length === 0) {
+    return { site_sessions: 0, diagnostic_page_sessions: 0, conversion_rate: 0, bounce_rate: 0 };
+  }
+
+  const row = rows[0];
+  const sessions = parseInt(row.sessions || "0", 10);
+  const conversionRate = parseFloat(row.conversion_rate || "0") * 100;
+  const bounceRate = parseFloat(row.bounce_rate || "0") * 100;
+
+  // Estimate diagnostic page sessions from diagnostic_sessions count in Supabase
+  // (ShopifyQL cannot filter by page path — we use our own data as the diagnostic denominator)
+  return {
+    site_sessions: sessions,
+    diagnostic_page_sessions: 0, // Will be filled from Supabase below
+    conversion_rate: conversionRate,
+    bounce_rate: bounceRate,
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/*  GA4 helpers (kept for backward compat when GA4 is configured)     */
 /* ------------------------------------------------------------------ */
 
 function base64url(buf: ArrayBuffer): string {
@@ -18,13 +78,11 @@ function base64url(buf: ArrayBuffer): string {
 }
 
 function pemToArrayBuffer(pem: string): ArrayBuffer {
-  // Normalize literal \n characters (common when secrets are pasted with escaped newlines)
   const normalized = pem.replace(/\\n/g, "\n");
   const b64 = normalized
     .replace(/-----BEGIN [A-Z ]+-----/g, "")
     .replace(/-----END [A-Z ]+-----/g, "")
     .replace(/\s/g, "");
-  console.log("🔐 PEM base64 length after cleanup:", b64.length);
   const binary = atob(b64);
   const buf = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
@@ -45,121 +103,64 @@ async function createSignedJwt(
     iat: now,
     exp: now + 3600,
   };
-
   const enc = new TextEncoder();
   const headerB64 = base64url(enc.encode(JSON.stringify(header)));
   const payloadB64 = base64url(enc.encode(JSON.stringify(payload)));
   const unsignedToken = `${headerB64}.${payloadB64}`;
-
   const keyData = pemToArrayBuffer(privateKeyPem);
   const cryptoKey = await crypto.subtle.importKey(
-    "pkcs8",
-    keyData,
+    "pkcs8", keyData,
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"],
+    false, ["sign"],
   );
-
-  const signature = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    cryptoKey,
-    enc.encode(unsignedToken),
-  );
-
+  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", cryptoKey, enc.encode(unsignedToken));
   return `${unsignedToken}.${base64url(signature)}`;
 }
 
 async function getAccessToken(email: string, privateKey: string): Promise<string> {
-  const jwt = await createSignedJwt(
-    email,
-    privateKey,
-    "https://www.googleapis.com/auth/analytics.readonly",
-  );
-  console.log("✅ JWT generated successfully, length:", jwt.length);
-
+  const jwt = await createSignedJwt(email, privateKey, "https://www.googleapis.com/auth/analytics.readonly");
   const res = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion: jwt,
-    }),
+    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: jwt }),
   });
-
   if (!res.ok) {
     const text = await res.text();
-    console.error("❌ Google OAuth error:", res.status, text);
     throw new Error(`Google OAuth error: ${res.status} – ${text}`);
   }
-  const data = await res.json();
-  console.log("✅ OAuth token retrieved, token starts with:", data.access_token?.substring(0, 20));
-  return data.access_token;
+  return (await res.json()).access_token;
 }
 
-/* ------------------------------------------------------------------ */
-/*  GA4 Data API helpers                                              */
-/* ------------------------------------------------------------------ */
-
 async function runReport(
-  accessToken: string,
-  propertyId: string,
-  startDate: string,
-  endDate: string,
-  pageFilter?: string,
-  metric: string = "sessions",
+  accessToken: string, propertyId: string,
+  startDate: string, endDate: string,
+  pageFilter?: string, metric = "sessions",
 ): Promise<number> {
   const body: Record<string, unknown> = {
     dateRanges: [{ startDate, endDate }],
     metrics: [{ name: metric }],
   };
-
   if (pageFilter) {
     body.dimensionFilter = {
-      filter: {
-        fieldName: "pagePath",
-        stringFilter: {
-          matchType: "BEGINS_WITH",
-          value: pageFilter,
-          caseSensitive: false,
-        },
-      },
+      filter: { fieldName: "pagePath", stringFilter: { matchType: "BEGINS_WITH", value: pageFilter, caseSensitive: false } },
     };
   }
-
-  const url = `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`;
-  console.log("📊 GA4 runReport request:", JSON.stringify({ url, body, pageFilter: pageFilter || "none" }));
-  
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
+  const res = await fetch(
+    `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`,
+    { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(body) },
+  );
   if (!res.ok) {
     const text = await res.text();
-    console.error("❌ GA4 API error:", res.status, text);
     throw new Error(`GA4 API error: ${res.status} – ${text}`);
   }
-
   const data = await res.json();
-  console.log("📊 GA4 API response (filter:", pageFilter || "none", "):", JSON.stringify(data));
   const value = data?.rows?.[0]?.metricValues?.[0]?.value;
-  console.log("📊 Extracted value:", value);
   return value ? parseInt(value, 10) : 0;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Landing page report helper                                        */
-/* ------------------------------------------------------------------ */
-
 async function runReportLandingPage(
-  accessToken: string,
-  propertyId: string,
-  startDate: string,
-  endDate: string,
+  accessToken: string, propertyId: string,
+  startDate: string, endDate: string,
   landingPagePath: string,
 ): Promise<number> {
   const body = {
@@ -167,39 +168,19 @@ async function runReportLandingPage(
     metrics: [{ name: "sessions" }],
     dimensions: [{ name: "landingPage" }],
     dimensionFilter: {
-      filter: {
-        fieldName: "landingPage",
-        stringFilter: {
-          matchType: "EXACT",
-          value: landingPagePath,
-          caseSensitive: false,
-        },
-      },
+      filter: { fieldName: "landingPage", stringFilter: { matchType: "EXACT", value: landingPagePath, caseSensitive: false } },
     },
   };
-
-  const url = `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`;
-  console.log("📊 GA4 landingPage report request:", JSON.stringify({ url, body }));
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-
+  const res = await fetch(
+    `https://analyticsdata.googleapis.com/v1beta/properties/${propertyId}:runReport`,
+    { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" }, body: JSON.stringify(body) },
+  );
   if (!res.ok) {
     const text = await res.text();
-    console.error("❌ GA4 landingPage API error:", res.status, text);
     throw new Error(`GA4 landingPage API error: ${res.status} – ${text}`);
   }
-
   const data = await res.json();
-  console.log("📊 GA4 landingPage response:", JSON.stringify(data));
   const value = data?.rows?.[0]?.metricValues?.[0]?.value;
-  console.log("📊 Landing page sessions extracted:", value);
   return value ? parseInt(value, 10) : 0;
 }
 
@@ -213,32 +194,92 @@ serve(async (req) => {
   }
 
   try {
-    const propertyId = Deno.env.get("GA4_PROPERTY_ID");
-    const email = Deno.env.get("GA4_SERVICE_ACCOUNT_EMAIL");
-    const privateKey = Deno.env.get("GA4_SERVICE_ACCOUNT_PRIVATE_KEY");
-
-    if (!propertyId || !email || !privateKey) {
-      throw new Error("Missing GA4 secrets");
-    }
-
     const { start_date, end_date } = await req.json();
-    console.log("📅 Request params:", { start_date, end_date });
     if (!start_date || !end_date) {
       throw new Error("start_date and end_date are required");
     }
 
-    console.log("🔑 Secrets loaded: propertyId=", propertyId, "email=", email, "privateKey length=", privateKey?.length);
-    const accessToken = await getAccessToken(email, privateKey);
+    // Check which analytics source is available
+    const ga4PropertyId = Deno.env.get("GA4_PROPERTY_ID");
+    const ga4Email = Deno.env.get("GA4_SERVICE_ACCOUNT_EMAIL");
+    const ga4PrivateKey = Deno.env.get("GA4_SERVICE_ACCOUNT_PRIVATE_KEY");
+    const hasGA4 = !!(ga4PropertyId && ga4Email && ga4PrivateKey);
 
-    const [siteSessions, diagnosticLandingSessions] = await Promise.all([
-      runReport(accessToken, propertyId, start_date, end_date),
-      runReportLandingPage(accessToken, propertyId, start_date, end_date, "/pages/diagnostic-de-peau"),
-    ]);
+    const shopifyToken = Deno.env.get("SHOPIFY_ACCESS_TOKEN") || Deno.env.get("SHOPIFY_ADMIN_ACCESS_TOKEN");
 
-    const result = { site_sessions: siteSessions, diagnostic_page_sessions: diagnosticLandingSessions };
-    console.log("✅ Final response:", JSON.stringify(result));
+    // Load tenant config for Shopify store domain + diagnostic sessions count
+    const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    let tenantConfig: Record<string, unknown> | null = null;
+    try {
+      tenantConfig = await loadTenantConfig(supabase);
+    } catch { /* ignore */ }
+
+    const shopifyStore = tenantConfig?.shopify_store_domain as string | undefined;
+    const hasShopify = !!(shopifyToken && shopifyStore);
+
+    console.log(`[ga4-analytics] Sources: GA4=${hasGA4}, Shopify=${hasShopify}`);
+
+    // Count diagnostic sessions in the date range (used as diagnostic_page_sessions
+    // denominator when GA4 is not available)
+    const { count: diagSessionsCount } = await supabase
+      .from("diagnostic_sessions")
+      .select("*", { count: "exact", head: true })
+      .gte("created_at", `${start_date}T00:00:00Z`)
+      .lte("created_at", `${end_date}T23:59:59Z`);
+
+    const diagnosticSessions = diagSessionsCount ?? 0;
+
+    // ── Strategy 1: Shopify (preferred — no external service account needed) ──
+    if (hasShopify) {
+      console.log(`[ga4-analytics] Using Shopify ShopifyQL for ${shopifyStore}`);
+      try {
+        const shopifyData = await fetchShopifyAnalytics(shopifyStore!, shopifyToken!, start_date, end_date);
+
+        const result = {
+          site_sessions: shopifyData.site_sessions,
+          diagnostic_page_sessions: diagnosticSessions,
+          conversion_rate: shopifyData.conversion_rate,
+          bounce_rate: shopifyData.bounce_rate,
+          source: "shopify",
+        };
+        console.log("[ga4-analytics] Shopify result:", JSON.stringify(result));
+        return new Response(JSON.stringify(result), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200,
+        });
+      } catch (err) {
+        console.error("[ga4-analytics] Shopify failed, falling through:", err);
+        // Fall through to GA4 if available
+      }
+    }
+
+    // ── Strategy 2: GA4 (fallback) ──
+    if (hasGA4) {
+      console.log("[ga4-analytics] Using GA4");
+      const accessToken = await getAccessToken(ga4Email!, ga4PrivateKey!);
+      const [siteSessions, diagnosticLandingSessions] = await Promise.all([
+        runReport(accessToken, ga4PropertyId!, start_date, end_date),
+        runReportLandingPage(accessToken, ga4PropertyId!, start_date, end_date, "/pages/diagnostic-de-peau"),
+      ]);
+
+      const result = {
+        site_sessions: siteSessions,
+        diagnostic_page_sessions: diagnosticLandingSessions,
+        source: "ga4",
+      };
+      console.log("[ga4-analytics] GA4 result:", JSON.stringify(result));
+      return new Response(JSON.stringify(result), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200,
+      });
+    }
+
+    // ── Strategy 3: Supabase only (no external analytics) ──
+    console.log("[ga4-analytics] No external analytics, returning Supabase-only data");
     return new Response(
-      JSON.stringify(result),
+      JSON.stringify({
+        site_sessions: 0,
+        diagnostic_page_sessions: diagnosticSessions,
+        source: "supabase_only",
+      }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 },
     );
   } catch (error) {

@@ -20,9 +20,11 @@ interface BusinessMetricsData {
   revenueTotal: number;
   orderCountTotal: number;
 
-  // GA4 data for conversion rates
+  // Analytics data for conversion rates
   siteSessions: number;
   diagnosticPageViews: number;
+  siteConversionRate: number; // Direct from Shopify/GA4
+  bounceRate: number;
 
   isLoading: boolean;
 }
@@ -42,6 +44,8 @@ export function useBusinessMetrics(dateRange?: DateRange): BusinessMetricsData {
     orderCountTotal: 0,
     siteSessions: 0,
     diagnosticPageViews: 0,
+    siteConversionRate: 0,
+    bounceRate: 0,
     isLoading: true,
   });
 
@@ -85,17 +89,21 @@ export function useBusinessMetrics(dateRange?: DateRange): BusinessMetricsData {
       const endDate = format(to, "yyyy-MM-dd");
       let siteSessions = 0;
       let diagnosticPageViews = 0;
+      let siteConversionRate = 0;
+      let bounceRate = 0;
 
       try {
-        const { data: ga4Data, error: ga4Error } = await supabase.functions.invoke("ga4-analytics", {
+        const { data: analyticsData, error: analyticsError } = await supabase.functions.invoke("ga4-analytics", {
           body: { start_date: startDate, end_date: endDate },
         });
-        if (!ga4Error && ga4Data) {
-          siteSessions = ga4Data.site_sessions || 0;
-          diagnosticPageViews = ga4Data.diagnostic_page_sessions || 0;
+        if (!analyticsError && analyticsData) {
+          siteSessions = analyticsData.site_sessions || 0;
+          diagnosticPageViews = analyticsData.diagnostic_page_sessions || 0;
+          siteConversionRate = analyticsData.conversion_rate || 0;
+          bounceRate = analyticsData.bounce_rate || 0;
         }
       } catch (err) {
-        console.error("GA4 fetch error in useBusinessMetrics:", err);
+        console.error("Analytics fetch error in useBusinessMetrics:", err);
       }
 
       // allOrders already contains the paginated results
@@ -136,6 +144,8 @@ export function useBusinessMetrics(dateRange?: DateRange): BusinessMetricsData {
         orderCountTotal,
         siteSessions,
         diagnosticPageViews,
+        siteConversionRate,
+        bounceRate,
         isLoading: false,
       });
     };

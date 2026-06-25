@@ -65,15 +65,13 @@ export function BusinessMetrics({ dateRange }: BusinessMetricsProps) {
     ? (metrics.revenueDiag / metrics.revenueTotal) * 100
     : 0;
 
-  // Conversion rate: diag purchases / diagnostic page views (GA4)
+  // Conversion rate diagnostic: diag purchases / diagnostic sessions
   const convRateDiag = metrics.diagnosticPageViews > 0
     ? (metrics.orderCountDiag / metrics.diagnosticPageViews) * 100
     : 0;
 
-  // Global conversion rate: non-diag orders / site sessions (GA4)
-  const convRateGlobal = metrics.siteSessions > 0
-    ? (metrics.orderCountNonDiag / metrics.siteSessions) * 100
-    : 0;
+  // Global site conversion rate: directly from Shopify/GA4 (not recalculated)
+  const convRateGlobal = metrics.siteConversionRate;
 
   const aovDiff = percentDiff(metrics.aovDiag, metrics.aovNonDiag);
   const convDiff = percentDiff(convRateDiag, convRateGlobal);
