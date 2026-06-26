@@ -486,7 +486,7 @@ export default function Dashboard() {
                         />
                         <MetricCard
                           title="Taux de conversion diag"
-                          value={`${fmt(convRateDiag, 1)}%`}
+                          value={`${fmt(convRateDiag, 2)}%`}
                           subtitle={`${businessMetrics.orderCountDiag} achats / ${businessMetrics.diagnosticPageViews.toLocaleString()} vues diag`}
                           icon={BarChart3}
                           comparison={{

@@ -129,7 +129,7 @@ export function BusinessMetrics({ dateRange }: BusinessMetricsProps) {
             />
             <MetricCard
               title="Taux de conversion diag"
-              value={`${fmt(convRateDiag, 1)}%`}
+              value={`${fmt(convRateDiag, 2)}%`}
               subtitle={`${metrics.orderCountDiag} achats / ${metrics.diagnosticPageViews.toLocaleString()} vues diag`}
               icon={Users}
               comparison={{
