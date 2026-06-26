@@ -25,6 +25,7 @@ interface BusinessMetricsData {
   diagnosticPageViews: number;
   siteConversionRate: number; // Direct from Shopify/GA4
   bounceRate: number;
+  siteAov: number; // AOV from Shopify (net sales based)
 
   isLoading: boolean;
 }
@@ -46,6 +47,7 @@ export function useBusinessMetrics(dateRange?: DateRange): BusinessMetricsData {
     diagnosticPageViews: 0,
     siteConversionRate: 0,
     bounceRate: 0,
+    siteAov: 0,
     isLoading: true,
   });
 
@@ -91,6 +93,7 @@ export function useBusinessMetrics(dateRange?: DateRange): BusinessMetricsData {
       let diagnosticPageViews = 0;
       let siteConversionRate = 0;
       let bounceRate = 0;
+      let siteAov = 0;
 
       try {
         const { data: analyticsData, error: analyticsError } = await supabase.functions.invoke("ga4-analytics", {
@@ -101,6 +104,7 @@ export function useBusinessMetrics(dateRange?: DateRange): BusinessMetricsData {
           diagnosticPageViews = analyticsData.diagnostic_page_sessions || 0;
           siteConversionRate = analyticsData.conversion_rate || 0;
           bounceRate = analyticsData.bounce_rate || 0;
+          siteAov = analyticsData.site_aov || 0;
         }
       } catch (err) {
         console.error("Analytics fetch error in useBusinessMetrics:", err);
@@ -146,6 +150,7 @@ export function useBusinessMetrics(dateRange?: DateRange): BusinessMetricsData {
         diagnosticPageViews,
         siteConversionRate,
         bounceRate,
+        siteAov,
         isLoading: false,
       });
     };

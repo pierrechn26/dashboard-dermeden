@@ -17,8 +17,9 @@ async function fetchShopifyAnalytics(
   shopifyToken: string,
   startDate: string,
   endDate: string,
-): Promise<{ site_sessions: number; diagnostic_page_sessions: number; conversion_rate: number; bounce_rate: number }> {
+): Promise<{ site_sessions: number; diagnostic_page_sessions: number; conversion_rate: number; bounce_rate: number; site_aov: number; site_orders: number; site_net_sales: number }> {
   const query = `FROM sessions SHOW sessions, conversion_rate, bounce_rate SINCE ${startDate} UNTIL ${endDate}`;
+  const salesQuery = `FROM sales SHOW average_order_value, orders, net_sales SINCE ${startDate} UNTIL ${endDate}`;
 
   const res = await fetch(
     `https://${shopifyStore}/admin/api/unstable/graphql.json`,
@@ -48,7 +49,7 @@ async function fetchShopifyAnalytics(
 
   const rows = shopifyql?.tableData?.rows;
   if (!rows || rows.length === 0) {
-    return { site_sessions: 0, diagnostic_page_sessions: 0, conversion_rate: 0, bounce_rate: 0 };
+    return { site_sessions: 0, diagnostic_page_sessions: 0, conversion_rate: 0, bounce_rate: 0, site_aov: 0, site_orders: 0, site_net_sales: 0 };
   }
 
   const row = rows[0];
@@ -56,13 +57,47 @@ async function fetchShopifyAnalytics(
   const conversionRate = parseFloat(row.conversion_rate || "0") * 100;
   const bounceRate = parseFloat(row.bounce_rate || "0") * 100;
 
-  // Estimate diagnostic page sessions from diagnostic_sessions count in Supabase
-  // (ShopifyQL cannot filter by page path — we use our own data as the diagnostic denominator)
+  // Fetch sales metrics (AOV, orders, net_sales) from ShopifyQL sales dataset
+  let siteAov = 0;
+  let siteOrders = 0;
+  let siteNetSales = 0;
+
+  try {
+    const salesRes = await fetch(
+      `https://${shopifyStore}/admin/api/unstable/graphql.json`,
+      {
+        method: "POST",
+        headers: {
+          "X-Shopify-Access-Token": shopifyToken,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          query: `{ shopifyqlQuery(query: "${salesQuery}") { parseErrors tableData { columns { name dataType } rows } } }`,
+        }),
+      },
+    );
+
+    if (salesRes.ok) {
+      const salesData = await salesRes.json();
+      const salesRows = salesData?.data?.shopifyqlQuery?.tableData?.rows;
+      if (salesRows && salesRows.length > 0) {
+        siteAov = parseFloat(salesRows[0].average_order_value || "0");
+        siteOrders = parseInt(salesRows[0].orders || "0", 10);
+        siteNetSales = parseFloat(salesRows[0].net_sales || "0");
+      }
+    }
+  } catch (err) {
+    console.error("[ga4-analytics] Sales query failed:", err);
+  }
+
   return {
     site_sessions: sessions,
     diagnostic_page_sessions: 0, // Will be filled from Supabase below
     conversion_rate: conversionRate,
     bounce_rate: bounceRate,
+    site_aov: siteAov,
+    site_orders: siteOrders,
+    site_net_sales: siteNetSales,
   };
 }
 
@@ -240,6 +275,9 @@ serve(async (req) => {
           diagnostic_page_sessions: diagnosticSessions,
           conversion_rate: shopifyData.conversion_rate,
           bounce_rate: shopifyData.bounce_rate,
+          site_aov: shopifyData.site_aov,
+          site_orders: shopifyData.site_orders,
+          site_net_sales: shopifyData.site_net_sales,
           source: "shopify",
         };
         console.log("[ga4-analytics] Shopify result:", JSON.stringify(result));

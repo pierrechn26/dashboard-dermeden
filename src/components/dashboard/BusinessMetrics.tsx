@@ -73,7 +73,8 @@ export function BusinessMetrics({ dateRange }: BusinessMetricsProps) {
   // Global site conversion rate: directly from Shopify/GA4 (not recalculated)
   const convRateGlobal = metrics.siteConversionRate;
 
-  const aovDiff = percentDiff(metrics.aovDiag, metrics.aovNonDiag);
+  const aovComparison = metrics.siteAov > 0 ? metrics.siteAov : metrics.aovNonDiag;
+  const aovDiff = percentDiff(metrics.aovDiag, aovComparison);
   const convDiff = percentDiff(convRateDiag, convRateGlobal);
   const caWithDiag = metrics.revenueTotal;
   const caWithoutDiag = metrics.revenueTotal - metrics.revenueDiag;

@@ -464,7 +464,8 @@ export default function Dashboard() {
                       ? (businessMetrics.orderCountDiag / businessMetrics.diagnosticPageViews) * 100 : 0;
                     const convRateGlobal = businessMetrics.siteConversionRate;
                     const convDiff = pctDiff(convRateDiag, convRateGlobal);
-                    const aovDiff = pctDiff(businessMetrics.aovDiag, businessMetrics.aovNonDiag);
+                    const aovComparison = businessMetrics.siteAov > 0 ? businessMetrics.siteAov : businessMetrics.aovNonDiag;
+                    const aovDiff = pctDiff(businessMetrics.aovDiag, aovComparison);
                     const caWithDiag = businessMetrics.revenueTotal;
                     const caWithoutDiag = businessMetrics.revenueTotal - businessMetrics.revenueDiag;
                     const caDiff = pctDiff(caWithDiag, caWithoutDiag);
@@ -504,7 +505,7 @@ export default function Dashboard() {
                           icon={TrendingUp}
                           comparison={{
                             period: "vs sans diagnostic",
-                            value: `${fmt(businessMetrics.aovNonDiag, 2)} €`,
+                            value: `${fmt(aovComparison, 2)} €`,
                             diff: aovDiff ? aovDiff.value : undefined,
                             positive: aovDiff?.positive,
                           }}
