@@ -462,8 +462,7 @@ export default function Dashboard() {
                     };
                     const convRateDiag = businessMetrics.diagnosticPageViews > 0
                       ? (businessMetrics.orderCountDiag / businessMetrics.diagnosticPageViews) * 100 : 0;
-                    const convRateGlobal = businessMetrics.siteSessions > 0
-                      ? (businessMetrics.orderCountNonDiag / businessMetrics.siteSessions) * 100 : 0;
+                    const convRateGlobal = businessMetrics.siteConversionRate;
                     const convDiff = pctDiff(convRateDiag, convRateGlobal);
                     const aovDiff = pctDiff(businessMetrics.aovDiag, businessMetrics.aovNonDiag);
                     const caWithDiag = businessMetrics.revenueTotal;
