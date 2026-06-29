@@ -307,46 +307,243 @@ Si la session n'apparaît pas, vérifier dans les logs Supabase de l'Edge Functi
 
 À faire **uniquement pour les intégrations que le client utilise**. Sinon, sauter cette étape.
 
-### 9.1 Shopify (si applicable)
+### 8.1 Shopify (si applicable)
 
-**Prérequis** : depuis janvier 2026, demander au client de t'envoyer un **collaborator access request** depuis son admin Shopify (et non un custom app token comme avant). Le client va sur Shopify Admin → Settings → Users and permissions → Collaborators → "Add collaborator" → coller ton ID Shopify Partners.
+> **Procédure validée sur l'onboarding Dermeden (juin 2026).** Depuis janvier 2026, Shopify a supprimé la création de custom apps depuis l'admin. Il faut passer par le **Dev Dashboard** (Shopify Partners) + **Custom Distribution** + **OAuth Authorization Code** pour obtenir un token Admin API.
 
-Une fois l'accès accepté :
-1. Récupérer le **Storefront Access Token** depuis Shopify Admin → Apps → Develop apps → API credentials
-2. Récupérer le **Admin API access token** (même endroit)
-3. Configurer les webhooks `orders/paid` et `checkouts/create` qui pointent vers les Edge Functions du dashboard :
-   - `orders/paid` → `https://{dashboard_supabase}/functions/v1/shopify-order-webhook`
-   - `checkouts/create` → `https://{dashboard_supabase}/functions/v1/shopify-checkout-webhook`
-4. Récupérer le webhook secret partagé pour HMAC
+#### Étape 1 — Obtenir l'accès collaborateur
 
-### Secrets Shopify à ajouter côté dashboard
+Demander au client d'envoyer un **collaborator access request** depuis son admin Shopify :
+- Shopify Admin → Settings → Users and permissions → Collaborators → "Add collaborator"
+- Le client colle ton ID Shopify Partners
 
+#### Étape 2 — Créer l'app dans le Dev Dashboard
+
+1. Aller sur **partners.shopify.com** → Apps → **Create app**
+2. Nommer l'app `AskIt Dashboard {client}`
+3. Dans **Configuration → Admin API scopes**, activer tous ces scopes (mettre large pour ne pas avoir à recréer une version plus tard) :
+   - `read_orders`, `read_products`, `read_customers`, `read_inventory`
+   - `read_price_rules`, `read_discounts`, `read_analytics`, `read_reports`
+   - `read_shipping`, `read_checkouts`, `read_marketing_events`
+   - `read_product_listings`, `read_collection_listings`
+   - `read_fulfillments`, `read_locales`, `read_content`
+4. Dans **Storefront API scopes**, activer :
+   - `unauthenticated_read_product_listings`
+   - `unauthenticated_read_product_inventory`
+   - `unauthenticated_read_product_tags`
+   - `unauthenticated_read_collection_listings`
+   - `unauthenticated_read_content`
+   - `unauthenticated_read_checkouts`
+5. Dans **Distribution**, sélectionner **"Custom distribution"**
+6. **Créer une version** (Versions → Create Version)
+7. **Générer un lien d'installation** pour le store du client
+8. **Installer l'app** sur le store via ce lien
+9. Noter le **Client ID** et le **Client Secret** (`shpss_...`) depuis les settings de l'app
+
+> **⚠️ Important** : le flow `client_credentials` (échange direct client_id/secret contre un token) ne fonctionne PAS pour les collaborateurs. Il faut utiliser le flow OAuth Authorization Code ci-dessous.
+
+#### Étape 3 — Obtenir le token Admin API via OAuth Authorization Code
+
+1. Construire cette URL (remplacer `{client_id}` et `{store}`) :
+   ```
+   https://{store}.myshopify.com/admin/oauth/authorize?client_id={client_id}&scope=read_orders,read_products,read_customers,read_inventory,read_price_rules,read_discounts,read_analytics,read_reports,read_shipping,read_checkouts,read_marketing_events,read_product_listings,read_collection_listings,read_fulfillments,read_locales,read_content&redirect_uri=https://example.com/callback
+   ```
+2. **Ouvrir cette URL dans un navigateur** → Shopify affiche la page d'autorisation → cliquer Install/Update
+3. Le navigateur redirige vers `https://example.com/callback?code=XXXXXX&shop=...` → **la page affiche une erreur (normal)** → copier le `code` depuis la barre d'adresse
+4. Échanger le code contre un token permanent :
+   ```bash
+   curl -s -X POST "https://{store}.myshopify.com/admin/oauth/access_token" \
+     -H "Content-Type: application/json" \
+     -d '{"client_id":"{client_id}","client_secret":"{client_secret}","code":"{code}"}'
+   ```
+5. La réponse contient `access_token` (format `shpca_...`) → **le noter immédiatement**
+
+> **Ce token est permanent** (contrairement au flow client_credentials qui expire en 24h). Il ne sera plus affiché.
+
+#### Étape 4 — Créer le webhook `orders/paid`
+
+1. Dans l'admin Shopify du client → **Settings → Notifications → Webhooks**
+2. Cliquer **"Create webhook"**
+3. Configurer :
+   - **Event** : `Order payment` (orders/paid)
+   - **Format** : JSON
+   - **URL** : `https://{project_ref}.supabase.co/functions/v1/shopify-order-webhook`
+   - **API version** : la plus récente
+4. **Copier le Webhook signing secret** (affiché en bas de la page webhooks après création)
+
+#### Étape 5 — Configurer les secrets Supabase
+
+Pousser les secrets via l'API Supabase Management :
+```bash
+SUPABASE_ACCESS_TOKEN="{ton_token}" && PROJECT_REF="{project_ref}" && \
+curl -s -X POST "https://api.supabase.com/v1/projects/${PROJECT_REF}/secrets" \
+  -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '[
+    {"name":"SHOPIFY_ACCESS_TOKEN","value":"{shpca_token}"},
+    {"name":"SHOPIFY_ADMIN_ACCESS_TOKEN","value":"{shpca_token}"},
+    {"name":"SHOPIFY_WEBHOOK_SECRET","value":"{webhook_signing_secret}"}
+  ]'
 ```
-SHOPIFY_STOREFRONT_ACCESS_TOKEN = {token Storefront}
-SHOPIFY_ACCESS_TOKEN = {token Admin}
-SHOPIFY_ADMIN_ACCESS_TOKEN = {token Admin, alias historique}
-SHOPIFY_WEBHOOK_SECRET = {secret HMAC orders/paid}
-SHOPIFY_CHECKOUT_WEBHOOK_SECRET = {secret HMAC checkouts/create}
-```
 
-### Mise à jour `tenant_config` pour Shopify
+> **Note** : `SHOPIFY_STOREFRONT_ACCESS_TOKEN` n'est plus nécessaire séparément. La fonction `sync-shopify-products` utilise le token Admin API (`SHOPIFY_ACCESS_TOKEN`) via l'Admin REST API, plus fiable que le Storefront GraphQL avec les nouveaux tokens `shpca_`.
+
+#### Étape 6 — Mettre à jour `tenant_config`
 
 ```sql
 UPDATE tenant_config
 SET
-  shopify_store_domain = '{client}.myshopify.com',
+  shopify_store_domain = '{store}.myshopify.com',
   integrations_enabled = jsonb_set(integrations_enabled, '{shopify}', 'true'::jsonb)
 WHERE project_id = '{client}';
 ```
 
-### Premier sync produits
+#### Étape 7 — Premier sync produits
 
-Lancer manuellement la fonction `sync-shopify-products` une première fois pour remplir `client_products` :
 ```bash
-curl -X POST https://{dashboard_supabase}/functions/v1/sync-shopify-products
+curl -s -X POST "https://{project_ref}.supabase.co/functions/v1/sync-shopify-products" \
+  -H "Authorization: Bearer {service_role_key}" \
+  -H "Content-Type: application/json"
 ```
 
-Vérifier que la table contient les produits du client.
+Vérifier que la réponse contient `"synced": N` avec N > 0 et `"errors": 0`.
+
+#### Étape 8 — Backfill des commandes historiques (30 jours)
+
+Le webhook ne capture que les **nouvelles commandes**. Pour avoir l'historique dans le dashboard, faire un backfill via un script Python :
+
+```python
+import json, urllib.request, ssl
+
+SHOPIFY_STORE = "{store}.myshopify.com"
+SHOPIFY_TOKEN = "{shpca_token}"
+SUPABASE_URL = "https://{project_ref}.supabase.co"
+SERVICE_KEY = "{service_role_key}"
+TENANT_ID = "{client}"
+
+# Calculer la date de début (30 jours)
+from datetime import datetime, timedelta
+SINCE = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%dT00:00:00Z")
+
+ctx = ssl.create_default_context()
+
+# Fetch toutes les commandes avec pagination
+all_orders = []
+next_url = f"https://{SHOPIFY_STORE}/admin/api/2024-01/orders.json?limit=250&status=any&created_at_min={SINCE}"
+page = 0
+
+while next_url and page < 20:
+    page += 1
+    req = urllib.request.Request(next_url, headers={"X-Shopify-Access-Token": SHOPIFY_TOKEN})
+    resp = urllib.request.urlopen(req, context=ctx)
+    data = json.loads(resp.read())
+    orders = data.get("orders", [])
+    all_orders.extend(orders)
+    print(f"Page {page}: {len(orders)} commandes (total: {len(all_orders)})")
+    link_header = resp.headers.get("Link", "")
+    next_url = None
+    if 'rel="next"' in link_header:
+        for part in link_header.split(","):
+            if 'rel="next"' in part:
+                next_url = part.split("<")[1].split(">")[0]
+
+# Préparer les lignes pour upsert
+rows = []
+for o in all_orders:
+    email = (o.get("email") or "").lower() or None
+    products = " | ".join([item["title"] for item in o.get("line_items", [])])
+    rows.append({
+        "tenant_id": TENANT_ID,
+        "external_order_id": str(o["id"]),
+        "source_provider": "shopify",
+        "order_number": o.get("name") or str(o.get("order_number", "")),
+        "total_price": float(o.get("total_price", 0)),
+        "currency": o.get("currency", "EUR"),
+        "created_at": o["created_at"],
+        "is_from_diagnostic": False,
+        "customer_email": email,
+        "validated_products": products,
+        "raw_payload": o,
+    })
+
+# Upsert par batch de 50
+for i in range(0, len(rows), 50):
+    batch = rows[i:i+50]
+    req = urllib.request.Request(
+        f"{SUPABASE_URL}/rest/v1/client_orders",
+        data=json.dumps(batch).encode("utf-8"),
+        headers={
+            "apikey": SERVICE_KEY,
+            "Authorization": f"Bearer {SERVICE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates",
+        },
+        method="POST"
+    )
+    urllib.request.urlopen(req, context=ctx)
+    print(f"  Batch {i//50+1}: {len(batch)} upserted")
+
+print(f"Done: {len(rows)} commandes importées")
+```
+
+#### Étape 9 — Matching rétroactif diagnostic ↔ commandes
+
+Après le backfill, croiser les sessions diagnostic terminées avec les commandes par email (fenêtre de 5 jours) et marquer les conversions :
+
+```bash
+# Identifier les conversions manuellement via SQL dans Supabase SQL Editor :
+SELECT ds.id, ds.session_code, ds.email, ds.created_at AS diag_date,
+       co.order_number, co.total_price, co.created_at AS order_date,
+       co.validated_products
+FROM diagnostic_sessions ds
+JOIN client_orders co ON co.customer_email = ds.email
+WHERE ds.status = 'termine'
+  AND ds.conversion = false
+  AND co.created_at >= ds.created_at
+  AND co.created_at <= ds.created_at + INTERVAL '5 days'
+ORDER BY ds.created_at;
+
+-- Pour chaque match trouvé, mettre à jour la session :
+UPDATE diagnostic_sessions
+SET conversion = true,
+    exit_type = 'converted',
+    validated_cart_amount = {montant},
+    validated_products = '{produits}',
+    shopify_order_id = '{order_id}'
+WHERE id = '{session_id}';
+
+-- Et marquer la commande comme venant du diagnostic :
+UPDATE client_orders
+SET is_from_diagnostic = true
+WHERE external_order_id = '{order_id}' AND tenant_id = '{client}';
+```
+
+#### Étape 10 — Vérification
+
+Tester le webhook en passant une commande test (ou attendre une commande réelle) :
+1. Vérifier dans `client_orders` que la commande apparaît avec `is_from_diagnostic = true/false`
+2. Si l'email correspond à une session diagnostic récente → vérifier que `diagnostic_sessions.conversion = true`
+3. Vérifier dans le dashboard → onglet Business que le CA et le panier moyen remontent
+
+#### Mécanisme de matching des conversions
+
+Le webhook `shopify-order-webhook` utilise une **double stratégie de matching** :
+
+1. **Match direct par `_diag_session`** (prioritaire) : cherche un champ `_diag_session` dans les `line_items[].properties` ou `note_attributes` de la commande Shopify. Ce champ contient le `session_code` du diagnostic et permet un match exact.
+
+2. **Fallback par email** (5 jours) : si pas de `_diag_session`, cherche une session diagnostic terminée (`status = termine`, `conversion = false`) avec le même email dans les 5 derniers jours.
+
+**Protection anti-doublon (Stratégie C+)** : une session déjà convertie n'est jamais ré-écrasée par un second webhook.
+
+#### Données remontées dans le dashboard via ShopifyQL
+
+La Edge Function `ga4-analytics` interroge Shopify via ShopifyQL (API GraphQL `unstable`) pour obtenir :
+- **Sessions site** : nombre total de sessions sur le store
+- **Taux de conversion site** : directement calculé par Shopify (sessions → achat)
+- **AOV site** : panier moyen basé sur les ventes nettes (après remises/retours, hors taxes/livraison)
+- **Taux de rebond** : pourcentage de sessions sans interaction
+
+Ces métriques sont utilisées comme base de comparaison ("vs sans diagnostic") dans le dashboard.
 
 ### 9.2 Klaviyo (si applicable)
 
