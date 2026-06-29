@@ -545,7 +545,77 @@ La Edge Function `ga4-analytics` interroge Shopify via ShopifyQL (API GraphQL `u
 
 Ces métriques sont utilisées comme base de comparaison ("vs sans diagnostic") dans le dashboard.
 
-### 9.2 Klaviyo (si applicable)
+#### Prompt Claude Code — Connexion Shopify complète
+
+> **Copier-coller ce prompt dans un nouveau chat Claude Code** pour automatiser toute la partie technique (étapes 3 à 9). Il faut avoir fait les étapes 1 et 2 manuellement avant (accès collaborateur + app créée dans le Dev Dashboard).
+
+```
+Je dois connecter Shopify au dashboard AskIt d'un client. L'app Shopify est déjà créée dans le Dev Dashboard Shopify Partners et installée sur le store du client via Custom Distribution.
+
+Voici les informations :
+- Store Shopify : {store}.myshopify.com
+- Client ID de l'app : {client_id}
+- Client Secret de l'app : {client_secret} (commence par shpss_)
+- Supabase project ref : {project_ref}
+- Supabase access token : {supabase_access_token}
+- Tenant ID (project_id dans tenant_config) : {client}
+
+IMPORTANT — Contexte technique :
+- Le flow client_credentials NE FONCTIONNE PAS pour les collaborateurs Shopify. Il faut utiliser le flow OAuth Authorization Code.
+- Depuis janvier 2026, on ne peut plus créer de custom apps depuis l'admin Shopify. L'app a été créée via le Dev Dashboard + Custom Distribution.
+
+Voici les étapes à suivre DANS L'ORDRE :
+
+ÉTAPE 1 — Obtenir le token Admin API via OAuth Authorization Code
+- Construis cette URL et affiche-la moi pour que je l'ouvre dans mon navigateur :
+  https://{store}.myshopify.com/admin/oauth/authorize?client_id={client_id}&scope=read_orders,read_products,read_customers,read_inventory,read_price_rules,read_discounts,read_analytics,read_reports,read_shipping,read_checkouts,read_marketing_events,read_product_listings,read_collection_listings,read_fulfillments,read_locales,read_content&redirect_uri=https://example.com/callback
+- Je vais ouvrir cette URL, Shopify va me rediriger vers example.com/callback?code=XXXX
+- La page affichera une erreur (c'est normal), je te donnerai l'URL complète
+- Tu extrairas le code et feras le curl POST pour échanger le code contre un token permanent (shpca_)
+- Le token obtenu est PERMANENT, il ne expire pas
+
+ÉTAPE 2 — Créer le webhook orders/paid
+- Dis-moi d'aller dans l'admin Shopify → Settings → Notifications → Webhooks → Create webhook
+- Event : Order payment (orders/paid)
+- Format : JSON
+- URL : https://{project_ref}.supabase.co/functions/v1/shopify-order-webhook
+- Je te donnerai le webhook signing secret
+
+ÉTAPE 3 — Configurer les secrets Supabase
+- Push les secrets via l'API Supabase Management :
+  - SHOPIFY_ACCESS_TOKEN = {le token shpca_ obtenu à l'étape 1}
+  - SHOPIFY_ADMIN_ACCESS_TOKEN = {même token}
+  - SHOPIFY_WEBHOOK_SECRET = {le signing secret de l'étape 2}
+
+ÉTAPE 4 — Mettre à jour tenant_config
+- Via l'API REST Supabase, UPDATE tenant_config pour :
+  - shopify_store_domain = '{store}.myshopify.com'
+  - integrations_enabled → shopify = true
+
+ÉTAPE 5 — Sync produits
+- Appeler la Edge Function sync-shopify-products
+- Vérifier que les produits sont importés (synced > 0, errors = 0)
+
+ÉTAPE 6 — Backfill commandes 30 jours
+- Récupérer toutes les commandes des 30 derniers jours via l'Admin API Shopify (pagination)
+- Les insérer dans client_orders via l'API REST Supabase
+- Utiliser les colonnes : external_order_id, source_provider="shopify", order_number, total_price, currency, created_at, customer_email, validated_products, raw_payload, tenant_id, is_from_diagnostic=false
+
+ÉTAPE 7 — Matching rétroactif
+- Croiser les sessions diagnostic terminées (status=termine, conversion=false) avec les commandes par email dans une fenêtre de 5 jours
+- Pour chaque match : UPDATE diagnostic_sessions SET conversion=true, exit_type='converted', validated_cart_amount=montant, shopify_order_id=id
+- Et UPDATE client_orders SET is_from_diagnostic=true
+
+ÉTAPE 8 — Vérification
+- Tester que le token Shopify fonctionne (GET /admin/api/2024-01/orders.json?limit=1)
+- Vérifier les produits dans client_products
+- Vérifier les commandes dans client_orders
+- Afficher un récap final avec : nb produits syncés, nb commandes importées, nb conversions trouvées, CA diagnostic
+
+Procède étape par étape et attends mes réponses quand tu as besoin d'informations de ma part (URL callback, webhook secret, etc.).
+```
+
+### 8.2 Klaviyo (si applicable)
 
 Récupérer côté Klaviyo :
 1. La clé API Klaviyo (Klaviyo Admin → Settings → API Keys → Create API Key avec accès profiles + lists)
