@@ -561,18 +561,39 @@ Voici les informations :
 - Tenant ID (project_id dans tenant_config) : {client}
 
 IMPORTANT — Contexte technique :
-- Le flow client_credentials NE FONCTIONNE PAS pour les collaborateurs Shopify. Il faut utiliser le flow OAuth Authorization Code.
+- Le flow client_credentials NE FONCTIONNE PAS pour les collaborateurs Shopify (erreur "shop_not_permitted"). N'essaie JAMAIS ce flow. Il faut utiliser le flow OAuth Authorization Code.
 - Depuis janvier 2026, on ne peut plus créer de custom apps depuis l'admin Shopify. L'app a été créée via le Dev Dashboard + Custom Distribution.
+- N'essaie PAS non plus de chercher un bouton "Allow custom app development" ou "Develop apps" dans l'admin Shopify du client — ça ne fonctionne plus pour les collaborateurs.
 
 Voici les étapes à suivre DANS L'ORDRE :
 
 ÉTAPE 1 — Obtenir le token Admin API via OAuth Authorization Code
-- Construis cette URL et affiche-la moi pour que je l'ouvre dans mon navigateur :
+- Construis cette URL et affiche-la moi TELLE QUELLE pour que je l'ouvre dans mon navigateur :
   https://{store}.myshopify.com/admin/oauth/authorize?client_id={client_id}&scope=read_orders,read_products,read_customers,read_inventory,read_price_rules,read_discounts,read_analytics,read_reports,read_shipping,read_checkouts,read_marketing_events,read_product_listings,read_collection_listings,read_fulfillments,read_locales,read_content&redirect_uri=https://example.com/callback
-- Je vais ouvrir cette URL, Shopify va me rediriger vers example.com/callback?code=XXXX
-- La page affichera une erreur (c'est normal), je te donnerai l'URL complète
-- Tu extrairas le code et feras le curl POST pour échanger le code contre un token permanent (shpca_)
-- Le token obtenu est PERMANENT, il ne expire pas
+
+- ATTENTION — POINT CRITIQUE (ça bloque à chaque fois si c'est mal expliqué) :
+  Quand je vais ouvrir cette URL, Shopify va d'abord me montrer une page d'autorisation (cliquer Install/Update). Ensuite Shopify me REDIRIGE vers example.com. La page va afficher une ERREUR ("site inaccessible", "adresse introuvable" ou similaire). C'est TOTALEMENT NORMAL — example.com n'est pas un vrai serveur, c'est juste un réceptacle pour récupérer le code.
+
+  CE QUE JE DOIS FAIRE : ne PAS fermer la page. Regarder la BARRE D'ADRESSE du navigateur. L'URL ressemblera à ça :
+  https://example.com/callback?code=37f2cf564504fd04eb82adc82754de41&hmac=xxxx&host=xxxx&shop={store}.myshopify.com&timestamp=xxxx
+
+  Je dois COPIER TOUTE CETTE URL et te la donner. Le code dont tu as besoin est la valeur après "?code=" (dans l'exemple : 37f2cf564504fd04eb82adc82754de41).
+
+  Dis-moi EXPLICITEMENT : "Copie l'URL COMPLÈTE qui est dans ta barre d'adresse, même si la page affiche une erreur. C'est normal que la page ne marche pas."
+
+- Une fois que je te donne l'URL, tu extrais le paramètre "code" et tu fais immédiatement ce curl :
+  ```
+  curl -s -X POST "https://{store}.myshopify.com/admin/oauth/access_token" \
+    -H "Content-Type: application/json" \
+    -d '{"client_id":"{client_id}","client_secret":"{client_secret}","code":"{code_extrait}"}'
+  ```
+- La réponse contient access_token (format shpca_...) → C'est le token PERMANENT. Il ne expire PAS (contrairement au flow client_credentials qui expire en 24h). Note-le immédiatement.
+- VÉRIFIE que le token fonctionne avec un appel test :
+  ```
+  curl -s "https://{store}.myshopify.com/admin/api/2024-01/orders.json?limit=1" \
+    -H "X-Shopify-Access-Token: {shpca_token}"
+  ```
+  Si tu reçois des données de commande, c'est bon. Si erreur 401, le code a peut-être expiré (il est à usage unique) — il faut que je refasse l'étape de l'URL d'autorisation.
 
 ÉTAPE 2 — Créer le webhook orders/paid
 - Dis-moi d'aller dans l'admin Shopify → Settings → Notifications → Webhooks → Create webhook
