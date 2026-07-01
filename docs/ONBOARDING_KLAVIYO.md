@@ -303,11 +303,18 @@ Ces propriétés remontent **automatiquement** pour chaque diagnostic, sans conf
 
 ### 4.6 Profil Klaviyo
 
-En plus des propriétés personnalisées, le sync remplit aussi :
-- **`email`** : normalisé en lowercase
-- **`phone_number`** : format E.164 (ex: `+33612345678`)
-- **`first_name`** : depuis `user_name` de la session
-- **`$source`** : `"Diagnostic Ask-it"` (tag interne Klaviyo)
+### 4.6 Champs natifs du profil Klaviyo (pas des propriétés personnalisées)
+
+En plus des propriétés personnalisées `AskIt — ...`, le sync remplit les **champs natifs** du profil Klaviyo. Ces champs ne sont PAS dans "Propriétés personnalisées" — ils apparaissent directement dans les infos du profil en haut de la fiche.
+
+| Champ natif Klaviyo | Source | Détail |
+|---|---|---|
+| **`first_name`** (Prénom) | `user_name` de la session diagnostic | Remplit automatiquement le prénom natif Klaviyo. Utilisable dans les emails via `{{ first_name }}` ou `{{ person.first_name }}`. **Ne PAS** le mettre en propriété personnalisée — il est envoyé comme attribut de premier niveau du profil, pas comme propriété. |
+| **`email`** | `email` de la session | Normalisé en lowercase et trimé |
+| **`phone_number`** | `phone` de la session | Converti en format E.164 (ex: `0612345678` → `+33612345678`). Nécessaire pour les SMS Klaviyo. |
+| **`$source`** | Fixe : `"Diagnostic Ask-it"` | Tag interne Klaviyo pour identifier l'origine du profil |
+
+> **Important** : le `first_name` est envoyé via `attributes.first_name` dans le payload Klaviyo (pas dans `attributes.properties`). C'est ce qui fait qu'il apparaît comme prénom natif du profil et non comme propriété personnalisée. Dans les templates d'emails, utiliser `{{ first_name }}` directement (pas `{{ person|lookup:'AskIt — Prénom' }}`).
 
 ---
 
